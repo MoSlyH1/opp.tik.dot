@@ -1,4 +1,6 @@
-backend/tests
-backend/Dockerfile
 frontend/node_modules
+**/__pycache__
+**/.pytest_cache
 docker-compose.yml
+**/Dockerfile
+**/.dockerignore
