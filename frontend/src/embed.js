@@ -11,7 +11,7 @@ export function embedUrl(item, { autoplay = false } = {}) {
         `&playsinline=1&loop=1&playlist=${id}&rel=0&modestbranding=1&controls=0&disablekb=1&fs=0&iv_load_policy=3`
     case 'tiktok':
       return `https://www.tiktok.com/player/v1/${id}?autoplay=${ap}&loop=1&music_info=1&description=0` +
-        `&rel=0&controls=1&progress_bar=1&volume_control=1&play_button=0&timestamp=0&fullscreen_button=0`
+        `&rel=0&controls=0&progress_bar=0&volume_control=0&play_button=0&timestamp=0&fullscreen_button=0&native_context_menu=0&closed_caption=0`
     case 'archive':
       return `https://archive.org/embed/${id}?autoplay=1`
     default:

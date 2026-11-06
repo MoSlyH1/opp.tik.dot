@@ -29,8 +29,12 @@ export default function FeedScroller({
     const root = ref.current
     if (!root) return undefined
     const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => { if (e.isIntersecting) setActive(Number(e.target.dataset.index)) })
-    }, { root, threshold: 0.6 })
+      // Only the card that is mostly on screen wins. (isIntersecting is still true for the card
+      // you are leaving, which used to bounce `active` back and stutter playback mid-swipe.)
+      let best = null
+      entries.forEach((e) => { if (e.intersectionRatio >= 0.6 && (!best || e.intersectionRatio > best.intersectionRatio)) best = e })
+      if (best) setActive(Number(best.target.dataset.index))
+    }, { root, threshold: [0.6, 0.9] })
     root.querySelectorAll('.card').forEach((el) => io.observe(el))
     return () => io.disconnect()
   }, [items])
@@ -82,7 +86,7 @@ export default function FeedScroller({
       <div ref={ref} className={`scroller ${reverse ? 'reverse' : ''}`}>
         {items.map((it, i) => (
           <FeedCard key={it.id} item={it} index={i}
-            active={i === active} near={Math.abs(i - active) <= 2} preload={Math.abs(i - active) <= 1}
+            active={i === active} near={Math.abs(i - active) <= 2} preload={i - active <= 2 && i - active >= -1}
             muted={muted} onToggleMute={() => setMuted((m) => !m)}
             onChange={onItemChange} onHide={onHide} />
         ))}

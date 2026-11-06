@@ -13,73 +13,118 @@ function RailButton({ icon, label, active, onClick, count }) {
 }
 
 export default function FeedCard({ item, index, active, near, preload, muted, onToggleMute, onChange, onHide }) {
-  const [interactive, setInteractive] = useState(false)
   const [toast, setToast] = useState('')
-  const [loaded, setLoaded] = useState(false)    // iframe finished loading
+  const [ready, setReady] = useState(false)       // player answered us (YouTube/TikTok API)
   const [playing, setPlaying] = useState(false)   // player reported "playing"
+  const [paused, setPaused] = useState(false)     // user tapped to pause
   const [fallback, setFallback] = useState(false) // player ignored postMessage -> plain autoplay URL
-  const [shown, setShown] = useState(false)       // archive embeds (no API): reveal after load
+  const [shown, setShown] = useState(false)       // archive / fallback embeds: reveal after load
   const frame = useRef(null)
+  const activeRef = useRef(active)
+  const mutedRef = useRef(muted)
+  activeRef.current = active
+  mutedRef.current = muted
   const scripted = item.source === 'youtube' || item.source === 'tiktok'
 
-  useEffect(() => { if (!active) { setInteractive(false); setShown(false) } }, [active])
+  useEffect(() => { if (!active) { setPaused(false); setShown(false) } }, [active])
 
-  // Players are mounted for this card and its neighbours (paused), so the next one is already loaded.
+  // Players are mounted for this card and its neighbours, so the next one is already buffered.
   const mounted = scripted ? (active || preload) : active
   const src = mounted ? embedUrl(item, { autoplay: fallback || !scripted }) : null
-  useEffect(() => { if (!src) { setLoaded(false); setPlaying(false) } }, [src])
+  useEffect(() => { setReady(false); setPlaying(false) }, [src])
 
-  const send = (type, func) => {
+  const send = (cmd, arg) => {
     const w = frame.current?.contentWindow
     if (!w) return
-    if (item.source === 'youtube') w.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*')
-    else w.postMessage({ 'x-tiktok-player': true, type }, '*')
+    if (item.source === 'youtube') {
+      const func = { play: 'playVideo', pause: 'pauseVideo', mute: 'mute', unMute: 'unMute', seekTo: 'seekTo' }[cmd]
+      w.postMessage(JSON.stringify({ event: 'command', func, args: cmd === 'seekTo' ? [arg, true] : [] }), '*')
+    } else {
+      w.postMessage({ 'x-tiktok-player': true, type: cmd, ...(arg !== undefined ? { value: arg } : {}) }, '*')
+    }
   }
+  const sendMute = (m) => send(m ? 'mute' : 'unMute')
 
-  // Player -> us: know when it is really playing.
+  // Player -> us. Any message means the player API is alive. Neighbour cards are "warmed up":
+  // played muted for a moment so they buffer, then paused at 0 — the swipe then starts instantly.
   useEffect(() => {
     if (!scripted) return undefined
     const onMsg = (e) => {
       if (!frame.current || e.source !== frame.current.contentWindow) return
       let d = e.data
       if (typeof d === 'string') { try { d = JSON.parse(d) } catch { return } }
-      const yt = d?.event === 'onStateChange' ? d.info : d?.event === 'infoDelivery' ? d.info?.playerState : undefined
-      const tt = d?.['x-tiktok-player'] && d.type === 'onStateChange' ? d.value : undefined
-      if (yt === 1 || tt === 1) setPlaying(true)
-      else if (yt === 2 || tt === 2) setPlaying(false)
+      if (!d || typeof d !== 'object') return
+      if (item.source === 'youtube' && !d.event) return
+      if (item.source === 'tiktok' && !d['x-tiktok-player']) return
+      setReady(true)
+      const yt = d.event === 'onStateChange' ? d.info : d.event === 'infoDelivery' ? d.info?.playerState : undefined
+      const tt = d['x-tiktok-player'] && d.type === 'onStateChange' ? d.value : undefined
+      const state = yt ?? tt
+      if (state === 1) {
+        if (!activeRef.current) { send('mute'); send('pause'); send('seekTo', 0); return }
+        setPlaying(true)
+      } else if (state === 2 && !activeRef.current) setPlaying(false)
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
-  }, [scripted])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scripted, item.source])
 
-  // Start the instant this card becomes active; pause it when it stops being active.
+  // YouTube only starts talking after a "listening" handshake, and ignores it until the player
+  // has booted — so keep knocking until it answers.
+  const onFrameLoad = () => {
+    if (!scripted) { setTimeout(() => setShown(true), 600); return }
+    if (fallback) { setTimeout(() => setShown(true), 400); return }
+    if (item.source !== 'youtube') return
+    let n = 0
+    const knock = () => {
+      frame.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: index, channel: 'widget' }), '*')
+    }
+    knock()
+    const t = setInterval(() => { if (++n > 40 || !frame.current) clearInterval(t); else knock() }, 150)
+    frame.current._knock = t
+  }
+  useEffect(() => { if (ready && frame.current?._knock) clearInterval(frame.current._knock) }, [ready])
+  useEffect(() => () => { if (frame.current?._knock) clearInterval(frame.current._knock) }, [])
+
+  // Active -> play (retry until it confirms). Inactive -> paused, muted, rewound.
   useEffect(() => {
-    if (!scripted || !loaded) return undefined
-    if (!active) { send('pause', 'pauseVideo'); setPlaying(false); return undefined }
-    if (interactive) return undefined
+    if (!scripted || !ready || fallback) return undefined
+    if (!active) {
+      sendMute(true)
+      if (playing) { send('pause'); send('seekTo', 0); setPlaying(false) }
+      else send('play') // warm-up; onMsg pauses it as soon as it starts
+      return undefined
+    }
+    if (paused) { send('pause'); return undefined }
     let tries = 0
     const go = () => {
-      send(muted ? 'mute' : 'unMute', muted ? 'mute' : 'unMute')
-      send('play', 'playVideo')
-      if (++tries >= 15) clearInterval(t)
+      sendMute(mutedRef.current)
+      send('play')
+      if (++tries >= 20) clearInterval(t)
     }
-    const t = setInterval(go, 250)
+    const t = setInterval(go, 200)
     go()
+    if (playing) clearInterval(t)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, loaded, muted, interactive, src])
+  }, [active, ready, paused, playing, fallback, src])
 
   // Mute toggle while playing.
-  useEffect(() => { if (scripted && loaded && active) send(muted ? 'mute' : 'unMute', muted ? 'mute' : 'unMute') }, [muted]) // eslint-disable-line
+  useEffect(() => { if (scripted && ready && active) sendMute(muted) }, [muted]) // eslint-disable-line
 
-  // Safety net: if the player never confirms playback, fall back to a plain autoplay URL.
+  // Safety net: if the player never answers, fall back to a plain autoplay URL.
   useEffect(() => {
-    if (!scripted || !active || playing || fallback) return undefined
-    const t = setTimeout(() => setFallback(true), 3500)
+    if (!scripted || !active || playing || fallback || paused) return undefined
+    const t = setTimeout(() => setFallback(true), ready ? 6000 : 4000)
     return () => clearTimeout(t)
-  }, [scripted, active, playing, fallback])
+  }, [scripted, active, playing, fallback, paused, ready])
 
-  const visible = active && (scripted ? (playing || fallback) : shown)
+  // The iframe is only revealed once frames are actually moving, so you never see the
+  // embed's own play / pause chrome — just the poster, then the video.
+  const visible = active && (scripted && !fallback ? (playing || paused) : shown)
+
+  const tap = () => { if (scripted && !fallback) setPaused((p) => !p) }
 
   // Watch-time signals for ranking: a view after 2.5s, a skip if left within 1.5s.
   useEffect(() => {
@@ -136,23 +181,14 @@ export default function FeedCard({ item, index, active, near, preload, muted, on
         <div className={`media ${item.source === 'tiktok' ? 'tall' : 'wide'}`}>
           {near && item.thumbnail && <img className="poster" src={item.thumbnail} alt="" loading="lazy" />}
           {src && (
-            <iframe key={src} ref={frame} src={src} title={item.title}
-              onLoad={() => {
-                if (item.source === 'youtube') frame.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*')
-                setLoaded(true)
-                if (!scripted) setTimeout(() => setShown(true), 700)
-              }}
-              style={{ opacity: visible ? 1 : 0, pointerEvents: active ? 'auto' : 'none', transition: 'opacity .2s ease' }}
+            <iframe key={src} ref={frame} src={src} title={item.title} onLoad={onFrameLoad}
+              tabIndex={-1}
+              style={{ opacity: visible ? 1 : 0, pointerEvents: 'none', transition: 'opacity .18s ease' }}
               allow="autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write"
               allowFullScreen referrerPolicy="strict-origin-when-cross-origin" />
           )}
-          {active && !interactive && (
-            <button type="button" className="shield" aria-label="Use video controls" onClick={() => setInteractive(true)} />
-          )}
-          {interactive && (
-            <button type="button" className="pill back-scroll" onClick={() => setInteractive(false)}>
-              <Icon name="up" size={14} /><Icon name="down" size={14} /> Back to scrolling
-            </button>
+          {active && (
+            <button type="button" className="shield" aria-label={paused ? 'Play' : 'Pause'} onClick={tap} />
           )}
 
           <div className="meta">
