@@ -15,8 +15,9 @@ function RailButton({ icon, label, active, onClick, count }) {
 export default function FeedCard({ item, index, active, near, muted, onToggleMute, onChange, onHide }) {
   const [interactive, setInteractive] = useState(false)
   const [toast, setToast] = useState('')
+  const [ready, setReady] = useState(false)
 
-  useEffect(() => { if (!active) setInteractive(false) }, [active])
+  useEffect(() => { if (!active) { setInteractive(false); setReady(false) } }, [active])
 
   // Watch-time signals for ranking: a view after 2.5s, a skip if left within 1.5s.
   useEffect(() => {
@@ -75,6 +76,8 @@ export default function FeedCard({ item, index, active, near, muted, onToggleMut
           {near && item.thumbnail && <img className="poster" src={item.thumbnail} alt="" loading="lazy" />}
           {src && (
             <iframe key={src} src={src} title={item.title}
+              onLoad={() => setTimeout(() => setReady(true), 700)}
+              style={{ opacity: ready ? 1 : 0, transition: 'opacity .25s ease' }}
               allow="autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write"
               allowFullScreen referrerPolicy="strict-origin-when-cross-origin" />
           )}

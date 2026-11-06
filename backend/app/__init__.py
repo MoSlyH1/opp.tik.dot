@@ -2,6 +2,7 @@ import logging
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from werkzeug.exceptions import HTTPException
 
@@ -47,6 +48,23 @@ def create_app(config_overrides: dict | None = None) -> Flask:
 
     with app.app_context():
         from . import models  # noqa: F401
-        db.create_all()
+        _create_tables()
 
     return app
+
+
+def _create_tables() -> None:
+    """Create missing tables without racing other cold starts.
+
+    On serverless, several instances can boot at once and all run CREATE TABLE;
+    Postgres then fails with "duplicate key ... pg_type". A transaction-level
+    advisory lock makes the instances take turns.
+    """
+    try:
+        with db.engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("SELECT pg_advisory_xact_lock(8675309)"))
+            db.metadata.create_all(conn)
+    except Exception:
+        # Don't take the whole API down (health, meta) if the DB is briefly unreachable.
+        logging.exception("create_all failed")

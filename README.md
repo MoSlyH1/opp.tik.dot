@@ -6,7 +6,7 @@ on **Rewind** and the whole feed runs the opposite direction.
 
 - React (Vite) frontend · Flask API · PostgreSQL
 - Google sign-in only
-- Docker for local/self-hosting, Vercel + Neon for serverless hosting
+- Docker for local/self-hosting, Vercel + Neon for serverless hosting (one project)
 - Works on phone and desktop (snap-scroll on touch, arrow keys / `j` `k` / buttons on desktop, `m` to mute)
 
 ---
@@ -71,7 +71,7 @@ No Google client yet? Set `DEV_LOGIN=1` in `.env` for a local-only sign-in butto
 
 ```bash
 # API
-cd backend && pip install -r requirements.txt
+cd backend && pip install -r requirements.txt -r requirements-dev.txt
 export DATABASE_URL=postgresql://opp:opp@localhost:5432/opptik GOOGLE_CLIENT_ID=... SECRET_KEY=...
 python wsgi.py                    # http://localhost:5000
 python -m app.ingest              # fill the catalogue once
@@ -80,7 +80,7 @@ python -m app.ingest              # fill the catalogue once
 cd frontend && npm install && npm run dev    # http://localhost:5173 (proxies /api to :5000)
 ```
 
-Tests: `cd backend && pytest`
+Tests: `cd backend && pip install -r requirements-dev.txt && pytest`
 
 ## Google sign-in setup
 
@@ -91,20 +91,27 @@ Tests: `cd backend && pytest`
 The browser gets a Google ID token, the API verifies it with Google's keys, then issues its own
 30-day session in an `HttpOnly` cookie.
 
-## Deploy to Vercel + Neon
+## Deploy to Vercel + Neon (one project)
 
-Vercel doesn't run Docker containers, so on Vercel the **same code** runs as a static React build
-plus a Python serverless function (`api/index.py` → the Flask app). Docker is for local dev or any
-container host (Render, Fly.io, Railway, a VPS).
+The root `vercel.json` deploys everything as **one Vercel project**: Vite builds `frontend/` into
+static files, and `api/index.py` runs the Flask app from `backend/` as a Python function. Every
+`/api/*` request goes to Flask; everything else is served by the React app. Same domain, so cookies
+just work and no CORS setup is needed. Docker is still there for local dev or container hosts.
 
 1. Create a Neon database and copy the **pooled** connection string.
-2. Import the repo in Vercel (root directory = repo root). `vercel.json` handles build, routing and cron.
+2. Vercel → *Add New Project* → import the repo. **Root Directory: leave it as the repo root (`./`)**,
+   Framework Preset: **Other**. Don't override the build settings; `vercel.json` sets them.
 3. Environment variables: `DATABASE_URL`, `SECRET_KEY`, `GOOGLE_CLIENT_ID`, `YOUTUBE_API_KEY`,
    `ADMIN_EMAILS`, `CRON_SECRET`, `COOKIE_SECURE=1`.
-4. Add the Vercel URL to the Google client's authorized origins.
-5. After the first deploy, sign in as an admin and press **Run ingest now** (or wait for the daily cron).
+4. Deploy, then open `https://<project>.vercel.app/api/health` → `{"ok": true}`.
+5. Add the site URL to the Google client's **Authorized JavaScript origins**.
+6. Sign in as an admin and press **Run ingest now** (or wait for the daily cron at 04:00 UTC).
 
-Vercel Hobby allows one cron run per day; on Pro you can change the schedule to every few hours.
+Python deps for Vercel come from the root `requirements.txt` (keep it in sync with
+`backend/requirements.txt`, which Docker uses). Tables are created on first boot under a Postgres
+advisory lock, so parallel cold starts don't collide.
+
+Vercel Hobby allows one cron run per day; on Pro you can change the schedule in `vercel.json`.
 
 ## API
 
@@ -132,7 +139,6 @@ backend/app/
 frontend/src/
   components/     Logo (counter-clockwise watch), FeedScroller, FeedCard, FilterBar…
   pages/          Login, Feed, Search, Profile, ItemPage
-api/index.py      Vercel entry
 ```
 
 ## Scaling roadmap (v2+)
