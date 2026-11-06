@@ -82,7 +82,7 @@ export default function FeedScroller({
       <div ref={ref} className={`scroller ${reverse ? 'reverse' : ''}`}>
         {items.map((it, i) => (
           <FeedCard key={it.id} item={it} index={i}
-            active={i === active} near={Math.abs(i - active) <= 2}
+            active={i === active} near={Math.abs(i - active) <= 2} preload={Math.abs(i - active) <= 1}
             muted={muted} onToggleMute={() => setMuted((m) => !m)}
             onChange={onItemChange} onHide={onHide} />
         ))}

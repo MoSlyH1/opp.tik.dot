@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
 import { embedUrl, shareUrl } from '../embed.js'
 import Icon from './Icon.jsx'
@@ -12,12 +12,74 @@ function RailButton({ icon, label, active, onClick, count }) {
   )
 }
 
-export default function FeedCard({ item, index, active, near, muted, onToggleMute, onChange, onHide }) {
+export default function FeedCard({ item, index, active, near, preload, muted, onToggleMute, onChange, onHide }) {
   const [interactive, setInteractive] = useState(false)
   const [toast, setToast] = useState('')
-  const [ready, setReady] = useState(false)
+  const [loaded, setLoaded] = useState(false)    // iframe finished loading
+  const [playing, setPlaying] = useState(false)   // player reported "playing"
+  const [fallback, setFallback] = useState(false) // player ignored postMessage -> plain autoplay URL
+  const [shown, setShown] = useState(false)       // archive embeds (no API): reveal after load
+  const frame = useRef(null)
+  const scripted = item.source === 'youtube' || item.source === 'tiktok'
 
-  useEffect(() => { if (!active) { setInteractive(false); setReady(false) } }, [active])
+  useEffect(() => { if (!active) { setInteractive(false); setShown(false) } }, [active])
+
+  // Players are mounted for this card and its neighbours (paused), so the next one is already loaded.
+  const mounted = scripted ? (active || preload) : active
+  const src = mounted ? embedUrl(item, { autoplay: fallback || !scripted }) : null
+  useEffect(() => { if (!src) { setLoaded(false); setPlaying(false) } }, [src])
+
+  const send = (type, func) => {
+    const w = frame.current?.contentWindow
+    if (!w) return
+    if (item.source === 'youtube') w.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*')
+    else w.postMessage({ 'x-tiktok-player': true, type }, '*')
+  }
+
+  // Player -> us: know when it is really playing.
+  useEffect(() => {
+    if (!scripted) return undefined
+    const onMsg = (e) => {
+      if (!frame.current || e.source !== frame.current.contentWindow) return
+      let d = e.data
+      if (typeof d === 'string') { try { d = JSON.parse(d) } catch { return } }
+      const yt = d?.event === 'onStateChange' ? d.info : d?.event === 'infoDelivery' ? d.info?.playerState : undefined
+      const tt = d?.['x-tiktok-player'] && d.type === 'onStateChange' ? d.value : undefined
+      if (yt === 1 || tt === 1) setPlaying(true)
+      else if (yt === 2 || tt === 2) setPlaying(false)
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [scripted])
+
+  // Start the instant this card becomes active; pause it when it stops being active.
+  useEffect(() => {
+    if (!scripted || !loaded) return undefined
+    if (!active) { send('pause', 'pauseVideo'); setPlaying(false); return undefined }
+    if (interactive) return undefined
+    let tries = 0
+    const go = () => {
+      send(muted ? 'mute' : 'unMute', muted ? 'mute' : 'unMute')
+      send('play', 'playVideo')
+      if (++tries >= 15) clearInterval(t)
+    }
+    const t = setInterval(go, 250)
+    go()
+    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, loaded, muted, interactive, src])
+
+  // Mute toggle while playing.
+  useEffect(() => { if (scripted && loaded && active) send(muted ? 'mute' : 'unMute', muted ? 'mute' : 'unMute') }, [muted]) // eslint-disable-line
+
+  // Safety net: if the player never confirms playback, fall back to a plain autoplay URL.
+  useEffect(() => {
+    if (!scripted || !active || playing || fallback) return undefined
+    const t = setTimeout(() => setFallback(true), 3500)
+    return () => clearTimeout(t)
+  }, [scripted, active, playing, fallback])
+
+  const visible = active && (scripted ? (playing || fallback) : shown)
 
   // Watch-time signals for ranking: a view after 2.5s, a skip if left within 1.5s.
   useEffect(() => {
@@ -66,7 +128,6 @@ export default function FeedCard({ item, index, active, near, muted, onToggleMut
     onHide?.(item.id)
   }
 
-  const src = active ? embedUrl(item, { muted }) : null
   const yearLabel = item.year ? String(item.year) : item.era_label
 
   return (
@@ -75,9 +136,13 @@ export default function FeedCard({ item, index, active, near, muted, onToggleMut
         <div className={`media ${item.source === 'tiktok' ? 'tall' : 'wide'}`}>
           {near && item.thumbnail && <img className="poster" src={item.thumbnail} alt="" loading="lazy" />}
           {src && (
-            <iframe key={src} src={src} title={item.title}
-              onLoad={() => setTimeout(() => setReady(true), 700)}
-              style={{ opacity: ready ? 1 : 0, transition: 'opacity .25s ease' }}
+            <iframe key={src} ref={frame} src={src} title={item.title}
+              onLoad={() => {
+                if (item.source === 'youtube') frame.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*')
+                setLoaded(true)
+                if (!scripted) setTimeout(() => setShown(true), 700)
+              }}
+              style={{ opacity: visible ? 1 : 0, pointerEvents: active ? 'auto' : 'none', transition: 'opacity .2s ease' }}
               allow="autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write"
               allowFullScreen referrerPolicy="strict-origin-when-cross-origin" />
           )}
