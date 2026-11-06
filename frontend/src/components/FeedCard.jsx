@@ -22,8 +22,10 @@ export default function FeedCard({ item, index, active, near, preload, muted, on
   const frame = useRef(null)
   const activeRef = useRef(active)
   const mutedRef = useRef(muted)
+  const pausedRef = useRef(false)
   activeRef.current = active
   mutedRef.current = muted
+  pausedRef.current = paused
   const scripted = item.source === 'youtube' || item.source === 'tiktok'
 
   useEffect(() => { if (!active) { setPaused(false); setShown(false) } }, [active])
@@ -60,10 +62,8 @@ export default function FeedCard({ item, index, active, near, preload, muted, on
       const yt = d.event === 'onStateChange' ? d.info : d.event === 'infoDelivery' ? d.info?.playerState : undefined
       const tt = d['x-tiktok-player'] && d.type === 'onStateChange' ? d.value : undefined
       const state = yt ?? tt
-      if (state === 1) {
-        if (!activeRef.current) { send('mute'); send('pause'); send('seekTo', 0); return }
-        setPlaying(true)
-      } else if (state === 2 && !activeRef.current) setPlaying(false)
+      if (state === 1) setPlaying(true)
+      else if (state === 2 && activeRef.current && !pausedRef.current) { setPlaying(false); send('play') }
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
@@ -87,28 +87,23 @@ export default function FeedCard({ item, index, active, near, preload, muted, on
   useEffect(() => { if (ready && frame.current?._knock) clearInterval(frame.current._knock) }, [ready])
   useEffect(() => () => { if (frame.current?._knock) clearInterval(frame.current._knock) }, [])
 
-  // Active -> play (retry until it confirms). Inactive -> paused, muted, rewound.
+  // Neighbours are never paused: they play muted and hidden so they stay buffered.
+  // The moment a card becomes active it is rewound to 0:00 and unmuted (if sound is on).
   useEffect(() => {
     if (!scripted || !ready || fallback) return undefined
-    if (!active) {
-      sendMute(true)
-      if (playing) { send('pause'); send('seekTo', 0); setPlaying(false) }
-      else send('play') // warm-up; onMsg pauses it as soon as it starts
-      return undefined
-    }
+    if (!active) { sendMute(true); send('play'); return undefined }
     if (paused) { send('pause'); return undefined }
+    sendMute(mutedRef.current)
+    send('seekTo', 0)
+    send('play')
     let tries = 0
-    const go = () => {
-      sendMute(mutedRef.current)
-      send('play')
-      if (++tries >= 20) clearInterval(t)
-    }
-    const t = setInterval(go, 200)
-    go()
-    if (playing) clearInterval(t)
+    const t = setInterval(() => {
+      if (playing || ++tries > 20) { clearInterval(t); return }
+      sendMute(mutedRef.current); send('play')
+    }, 200)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, ready, paused, playing, fallback, src])
+  }, [active, ready, paused, fallback, src])
 
   // Mute toggle while playing.
   useEffect(() => { if (scripted && ready && active) sendMute(muted) }, [muted]) // eslint-disable-line
