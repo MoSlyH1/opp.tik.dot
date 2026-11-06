@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: opp
+      POSTGRES_PASSWORD: opp
+      POSTGRES_DB: opptik
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opp -d opptik"]
+      interval: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://opp:opp@db:5432/opptik
+    depends_on:
+      db: { condition: service_healthy }
+    ports:
+      - "5000:5000"
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://opp:opp@db:5432/opptik
+    depends_on:
+      db: { condition: service_healthy }
+
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:

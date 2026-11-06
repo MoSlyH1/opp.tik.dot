@@ -1,0 +1,9 @@
+# Used by Vercel's Python runtime for api/index.py (keep in sync with backend/requirements.txt).
+Flask==3.1.2
+Flask-SQLAlchemy==3.1.1
+Flask-Cors==6.0.1
+SQLAlchemy==2.0.43
+psycopg[binary]==3.2.10
+google-auth==2.40.3
+PyJWT==2.10.1
+requests==2.32.5

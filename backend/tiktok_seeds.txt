@@ -1,0 +1,4 @@
+# One public TikTok video URL per line. Picked up by every ingest run.
+# Use this (or the admin panel in the app) to hand-curate nostalgic TikToks,
+# e.g. #90s #y2k #throwback #2000s #nostalgia creators.
+# https://www.tiktok.com/@someone/video/1234567890123456789
