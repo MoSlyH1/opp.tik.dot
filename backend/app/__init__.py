@@ -1,6 +1,6 @@
 import logging
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from sqlalchemy.pool import NullPool
 from werkzeug.exceptions import HTTPException
@@ -35,7 +35,10 @@ def create_app(config_overrides: dict | None = None) -> Flask:
 
     @app.errorhandler(HTTPException)
     def http_error(e):
-        return jsonify(error=e.description), e.code
+        body = {"error": e.description}
+        if e.code == 404:
+            body["path"] = request.path  # helps debugging routing problems
+        return jsonify(body), e.code
 
     @app.errorhandler(Exception)
     def server_error(e):
