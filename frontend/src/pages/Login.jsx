@@ -27,7 +27,7 @@ export default function Login() {
         {YEARS.map((y, i) => {
           const it = wall[i]
           return (
-            <div className="wall-frame" key={y + i} style={{ animationDelay: `${(i % 6) * -1.3}s` }}>
+            <div className="wall-frame" key={i} style={{ animationDelay: `${(i % 6) * -1.3}s` }}>
               {it?.thumbnail ? <img src={it.thumbnail} alt="" loading="lazy" /> : null}
               <span className="mono">{it ? it.era_label : y}</span>
             </div>
@@ -40,8 +40,8 @@ export default function Login() {
         <h1 className="wordmark big">opp.tik.dot</h1>
         <p className="lede">The feed, rewound.</p>
         <p className="sub">
-          Movies, music videos, style, ads and TV from the '90s, the 2000s and before.
-          One swipe at a time, in either direction.
+          Cartoons, football, music videos, films, ads and TV from the '50s to the 2000s,
+          from Beirut to Tokyo to Mexico City. One swipe at a time, or rewind.
         </p>
 
         <div className="login-actions">
@@ -63,7 +63,7 @@ export default function Login() {
           {error && <p className="error">{error}</p>}
         </div>
 
-        <p className="fine mono">Plays through official TikTok, YouTube and Internet Archive embeds.</p>
+        <p className="fine mono">Plays through official YouTube, Internet Archive, Dailymotion and TikTok players.</p>
       </main>
     </div>
   )

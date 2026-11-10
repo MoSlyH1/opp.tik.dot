@@ -1,19 +1,27 @@
-import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api.js'
-import FeedScroller from '../components/FeedScroller.jsx'
+import Pager from '../components/Pager.jsx'
 import Icon from '../components/Icon.jsx'
 
+// A shared link, or a tile opened from Search / Profile: when we came from a list, you can
+// keep swiping through that list like a feed.
 export default function ItemPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [item, setItem] = useState(null)
+  const { state } = useLocation()
+  const [items, setItems] = useState(() => state?.items || [])
+  const [start] = useState(() => state?.index || 0)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    setItem(null)
-    api.item(id).then((r) => setItem(r.item)).catch((e) => setError(e.message))
-  }, [id])
+    if (state?.items?.length) return
+    setItems([])
+    api.item(id).then((r) => setItems([r.item])).catch((e) => setError(e.message))
+  }, [id, state])
+
+  const update = useCallback((it) => setItems((prev) => prev.map((p) => (p.id === it.id ? { ...p, ...it } : p))), [])
+  const hide = useCallback((hid) => setItems((prev) => prev.filter((p) => p.id !== hid)), [])
 
   return (
     <div className="feed-page">
@@ -23,8 +31,9 @@ export default function ItemPage() {
         </button>
         <Link to="/" className="pill">Open the feed</Link>
       </div>
-      <FeedScroller items={item ? [item] : []} loading={!item && !error} error={error} done
-        onItemChange={setItem} />
+      <Pager items={items} startIndex={start} resetKey={state?.items ? 'list' : id}
+        loading={!items.length && !error} error={error} done={false}
+        onItemChange={update} onHide={state?.items ? hide : undefined} />
     </div>
   )
 }

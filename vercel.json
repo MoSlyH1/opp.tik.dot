@@ -4,6 +4,7 @@
   "installCommand": "cd frontend && npm ci",
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
+  "git": { "deploymentEnabled": { "clips": false } },
   "functions": {
     "api/index.py": {
       "includeFiles": "backend/**",
@@ -12,10 +13,78 @@
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/media/:host(ia[0-9]+\\.us\\.archive\\.org)/:path*",
+      "destination": "https://:host/:path*"
+    },
+    {
+      "source": "/thumb/:id([A-Za-z0-9._-]+)",
+      "destination": "https://archive.org/services/img/:id"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ],
   "crons": [
-    { "path": "/api/cron/ingest", "schedule": "0 4 * * *" }
+    {
+      "path": "/api/cron/ingest",
+      "schedule": "0 4 * * *"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "key": "Service-Worker-Allowed",
+          "value": "/"
+        }
+      ]
+    },
+    {
+      "source": "/favicon.svg",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        }
+      ]
+    },
+    {
+      "source": "/media/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/thumb/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, s-maxage=2592000, stale-while-revalidate=86400"
+        }
+      ]
+    }
   ]
 }

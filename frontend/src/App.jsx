@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { api } from './api.js'
+import { boot } from './lib/boot.js'
 import { AuthContext, MetaContext } from './context.js'
 import Logo from './components/Logo.jsx'
 import Shell from './components/Shell.jsx'
@@ -14,7 +15,7 @@ export default function App({ meta }) {
   const [user, setUser] = useState(undefined)
 
   useEffect(() => {
-    api.me().then((r) => setUser(r.user)).catch(() => setUser(null))
+    boot.me.then((r) => setUser(r.user || null)).catch(() => setUser(null))
   }, [])
 
   const auth = useMemo(() => ({

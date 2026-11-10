@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../context.js'
 import Icon from './Icon.jsx'
 import Logo from './Logo.jsx'
@@ -11,6 +11,9 @@ const NAV = [
 
 export default function Shell() {
   const { user } = useAuth()
+  const { pathname } = useLocation()
+  // Tapping "Feed" while already on it refreshes, like the home button on TikTok / Instagram.
+  const tapNav = (to) => () => { if (to === '/' && pathname === '/') window.dispatchEvent(new Event('opp:home')) }
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -20,7 +23,7 @@ export default function Shell() {
         </NavLink>
         <nav className="side-nav">
           {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} className="side-link">
+            <NavLink key={n.to} to={n.to} end={n.end} className="side-link" onClick={tapNav(n.to)}>
               <Icon name={n.icon} /> <span>{n.label}</span>
             </NavLink>
           ))}
@@ -38,7 +41,7 @@ export default function Shell() {
 
       <nav className="bottom-nav">
         {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} className="bottom-link" aria-label={n.label}>
+          <NavLink key={n.to} to={n.to} end={n.end} className="bottom-link" aria-label={n.label} onClick={tapNav(n.to)}>
             <Icon name={n.icon} size={24} />
             <span>{n.label}</span>
           </NavLink>

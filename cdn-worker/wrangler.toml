@@ -1,0 +1,9 @@
+# Optional: deploy from the terminal instead of the dashboard.
+#   npm i -g wrangler && wrangler login && cd cdn-worker && wrangler deploy
+name = "opp-video"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[[r2_buckets]]
+binding = "VIDEO"
+bucket_name = "opp-video"

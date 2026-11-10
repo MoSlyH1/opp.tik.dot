@@ -1,0 +1,74 @@
+# v11: make a small hosted clip for the most-watched Internet Archive videos and publish them
+# on the `clips` branch, which Cloudflare Pages serves for free (unlimited bandwidth).
+#
+# One-time setup (see README, "What's new in v11"):
+#   1. Repo -> Settings -> Secrets and variables -> Actions -> New secret: DATABASE_URL (your Neon link)
+#   2. Actions -> clips -> Run workflow (creates the `clips` branch)
+#   3. Cloudflare -> Workers & Pages -> Create -> Pages -> Connect to Git -> this repo, branch `clips`
+#   4. Vercel -> Environment Variables -> CLIPS_BASE = https://<your-project>.pages.dev
+# After that it runs by itself every day and adds more clips.
+name: clips
+on:
+  schedule: [{ cron: "30 5 * * *" }]   # daily, after the 04:00 ingest
+  workflow_dispatch:
+    inputs:
+      limit: { description: "Clips to make in this run", default: "150" }
+permissions:
+  contents: write                      # lets the built-in token push the `clips` branch
+concurrency: { group: clips, cancel-in-progress: false }
+jobs:
+  clips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
+      - run: pip install -r backend/requirements.txt
+
+      # The `clips` branch holds only the finished files. Fetch it WITHOUT downloading the videos
+      # already on it (blobless fetch + index only), so a run stays fast however big it grows.
+      - name: Prepare the clips branch
+        run: |
+          set -e
+          AUTH="Authorization: basic $(printf 'x-access-token:%s' "${{ github.token }}" | base64 -w0)"
+          git init -q clips-repo && cd clips-repo
+          git config user.name "opp-clips" && git config user.email "actions@users.noreply.github.com"
+          git remote add origin "https://github.com/${{ github.repository }}.git"
+          git config http.https://github.com/.extraheader "$AUTH"
+          if git ls-remote --exit-code --heads origin clips >/dev/null 2>&1; then
+            git fetch -q --depth 1 --filter=blob:none origin clips
+            git update-ref refs/heads/clips FETCH_HEAD && git symbolic-ref HEAD refs/heads/clips
+            git read-tree HEAD
+          else
+            git checkout -q --orphan clips
+          fi
+          mkdir -p c
+          cat > _headers <<'H'
+          /c/*
+            Cache-Control: public, max-age=31536000, immutable
+            Access-Control-Allow-Origin: *
+          H
+
+      - name: Encode clips
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m app.clips --limit "${{ github.event.inputs.limit || '150' }}" --out ../clips-repo/c --manifest ../clips-manifest.json
+
+      - name: Publish to the clips branch
+        run: |
+          set -e
+          cd clips-repo
+          git add --ignore-removal _headers c   # add only: files from earlier runs are not on disk here, never delete them
+          if git diff --cached --quiet; then echo "nothing new"; exit 0; fi
+          git commit -q -m "clips: $(ls c | wc -l) new"
+          git push -q origin clips
+
+      # Only after the files are published: tell the app they exist.
+      - name: Tell the app
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m app.clips --apply ../clips-manifest.json

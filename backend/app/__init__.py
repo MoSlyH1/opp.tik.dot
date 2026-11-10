@@ -54,7 +54,7 @@ def create_app(config_overrides: dict | None = None) -> Flask:
 
 
 def _create_tables() -> None:
-    """Create missing tables without racing other cold starts.
+    """Create missing tables / columns without racing other cold starts.
 
     On serverless, several instances can boot at once and all run CREATE TABLE;
     Postgres then fails with "duplicate key ... pg_type". A transaction-level
@@ -65,6 +65,45 @@ def _create_tables() -> None:
             if conn.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(8675309)"))
             db.metadata.create_all(conn)
+            _migrate(conn)
     except Exception:
         # Don't take the whole API down (health, meta) if the DB is briefly unreachable.
         logging.exception("create_all failed")
+
+
+# Columns added after v3. create_all() never alters existing tables, so add them here.
+# Plain ADD COLUMN with a default works on Postgres and SQLite alike.
+NEW_COLUMNS = {
+    "items": [
+        ("labels", "VARCHAR(400) NOT NULL DEFAULT ''"),
+        ("lang", "VARCHAR(16)"),
+        ("duration", "INTEGER"),
+        ("media_url", "VARCHAR(800)"),
+        ("impressions", "INTEGER NOT NULL DEFAULT 0"),
+        ("engagement", "FLOAT NOT NULL DEFAULT 0"),
+        ("broken", "INTEGER NOT NULL DEFAULT 0"),
+        ("tax_v", "INTEGER NOT NULL DEFAULT 0"),
+        ("media_info", "JSON"),
+    ],
+    "interactions": [("value", "FLOAT")],
+}
+
+
+def _migrate(conn) -> None:
+    from sqlalchemy import inspect
+
+    from .taxonomy import ERA_RANGES
+
+    insp = inspect(conn)
+    for table, cols in NEW_COLUMNS.items():
+        have = {c["name"] for c in insp.get_columns(table)}
+        for name, ddl in cols:
+            if name not in have:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                logging.info("migrated: %s.%s", table, name)
+    # v3 had one "classic" bucket for everything before 1990: split it by decade.
+    if conn.execute(text("SELECT 1 FROM items WHERE era = 'classic' LIMIT 1")).first():
+        for era, (y0, y1) in ERA_RANGES.items():
+            conn.execute(text("UPDATE items SET era = :e WHERE era = 'classic' AND year BETWEEN :a AND :b"),
+                         {"e": era, "a": y0, "b": y1})
+        conn.execute(text("UPDATE items SET era = '80s' WHERE era = 'classic'"))

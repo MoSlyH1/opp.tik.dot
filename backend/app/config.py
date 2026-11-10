@@ -22,10 +22,23 @@ class Config:
 
     GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
     YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+    DAILYMOTION = os.environ.get("DAILYMOTION", "1") == "1"   # keyless, on by default
+    # Optional official social APIs (see app/providers/social.py). Empty = source off.
+    META_ACCESS_TOKEN = os.environ.get("META_ACCESS_TOKEN", "")
+    IG_USER_ID = os.environ.get("IG_USER_ID", "")
+    X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "")
+    REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "")
+    REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
 
     CORS_ORIGINS = _list("CORS_ORIGINS") or ["http://localhost:5173", "http://localhost:8080"]
     ADMIN_EMAILS = {e.lower() for e in _list("ADMIN_EMAILS")}
     CRON_SECRET = os.environ.get("CRON_SECRET", "")
+    # v10: address of the free Cloudflare edge Worker (edge-worker/worker.js), e.g.
+    # https://opp-edge.you.workers.dev. Empty = archive.org files go through Vercel (/media).
+    MEDIA_BASE = os.environ.get("MEDIA_BASE", "").strip().rstrip("/")
+    # v11: address of the Cloudflare Pages site that hosts the small clips (the `clips` branch),
+    # e.g. https://opp-clips.pages.dev. Empty = every video plays from its original source.
+    CLIPS_BASE = os.environ.get("CLIPS_BASE", "").strip().rstrip("/")
 
     COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
     SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "30"))

@@ -1,8 +1,72 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
-import { loadFilters, saveFilters, useAuth, useMeta } from '../context.js'
-import { ChipGroup } from '../components/FilterBar.jsx'
+import { cleanFilters, saveFilters, useAuth, useMeta } from '../context.js'
+import { FilterSections } from '../components/FilterBar.jsx'
 import Tile from '../components/Tile.jsx'
+import { MODES, TIER_LABEL, setMode, useQuality } from '../lib/quality.js'
+import { LENGTHS, setClipLength, useClipLength } from '../lib/clip.js'
+
+function Playback() {
+  const { mode, tier } = useQuality()
+  const length = useClipLength()
+  return (
+    <>
+    <section className="panel">
+      <h3>Playback quality</h3>
+      <p className="muted small">Lower quality starts faster and uses less data. Auto measures every video start and adjusts.</p>
+      <div className="q-options wide">
+        {MODES.map((m) => (
+          <button key={m.id} type="button" className={`q-opt ${mode === m.id ? 'on' : ''}`} onClick={() => setMode(m.id)}>
+            <strong>{m.id === 'auto' && mode === 'auto' ? `Auto · now ${TIER_LABEL[tier]}` : m.label}</strong>
+            <span>{m.hint}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+    <section className="panel">
+      <h3>Clip length</h3>
+      <p className="muted small">Each video plays its best part, then the next one slides in. Shorter clips load faster and use less data. Tap "Watch full" on any clip to keep going.</p>
+      <div className="q-options wide four">
+        {LENGTHS.map((l) => (
+          <button key={l.id} type="button" className={`q-opt ${length === l.id ? 'on' : ''}`} onClick={() => setClipLength(l.id)}>
+            <strong>{l.label}</strong>
+            <span>{l.hint}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+    </>
+  )
+}
+
+function Following() {
+  const { user, setUser } = useAuth()
+  const list = user.prefs?.follows || []
+  const [busy, setBusy] = useState('')
+  if (!list.length) return null
+  const unfollow = async (key) => {
+    const [source, author] = key.split('|')
+    setBusy(key)
+    try { setUser((await api.follow({ source, author, on: false })).user) } catch { /* keep */ }
+    setBusy('')
+  }
+  return (
+    <section className="panel">
+      <h3>Following</h3>
+      <p className="muted small">Creators you follow show up more often in your feed.</p>
+      <div className="chips wrap">
+        {list.map((k) => {
+          const [source, author] = k.split('|')
+          return (
+            <button key={k} type="button" className="chip" disabled={busy === k} onClick={() => unfollow(k)} title="Unfollow">
+              @{author} <span className="mono muted small">{source}</span> ✕
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
 
 function Collection() {
   const [tab, setTab] = useState('like')
@@ -27,7 +91,7 @@ function Collection() {
 function Defaults() {
   const meta = useMeta()
   const { user, setUser } = useAuth()
-  const [prefs, setPrefs] = useState(() => loadFilters(user))
+  const [prefs, setPrefs] = useState(() => cleanFilters(user.prefs || {}, meta))
   const [status, setStatus] = useState('')
   const save = async () => {
     saveFilters(prefs)
@@ -37,14 +101,7 @@ function Defaults() {
     <section className="panel">
       <h3>Feed defaults</h3>
       <p className="muted small">What your feed opens with. You can always change it from the feed.</p>
-      <label className="label mono">Eras</label>
-      <ChipGroup options={meta.eras || []} value={prefs.era} allLabel="All eras" onChange={(era) => setPrefs({ ...prefs, era })} />
-      <label className="label mono">Categories</label>
-      <ChipGroup options={meta.categories || []} value={prefs.category} allLabel="Everything" onChange={(category) => setPrefs({ ...prefs, category })} />
-      <label className="switch">
-        <input type="checkbox" checked={prefs.reverse} onChange={(e) => setPrefs({ ...prefs, reverse: e.target.checked })} />
-        <span>Start in rewind mode (scroll the opposite way)</span>
-      </label>
+      <FilterSections meta={meta} value={prefs} onChange={setPrefs} sources={false} />
       <div className="row">
         <button type="button" className="btn" onClick={save}>Save defaults</button>
         {status && <span className="mono muted small">{status}</span>}
@@ -54,32 +111,59 @@ function Defaults() {
 }
 
 function Admin() {
+  const meta = useMeta()
   const [urls, setUrls] = useState('')
+  const [hint, setHint] = useState({ era: '', topic: '', region: '' })
   const [msg, setMsg] = useState('')
   const [stats, setStats] = useState(null)
   const refresh = () => api.adminStats().then(setStats).catch(() => {})
   useEffect(() => { refresh() }, [])
-  const addTikToks = async () => {
-    const list = urls.split(/\s+/).filter((u) => u.includes('tiktok.com'))
-    if (!list.length) { setMsg('Paste at least one TikTok video URL'); return }
+  const addLinks = async () => {
+    const list = urls.split(/\s+/).filter((u) => u.startsWith('http'))
+    if (!list.length) { setMsg('Paste at least one video link'); return }
     setMsg('Adding…')
-    try { const r = await api.adminTikTok(list); setMsg(`Added ${r.added} of ${list.length}`); setUrls(''); refresh() } catch (e) { setMsg(e.message) }
+    try {
+      const r = await api.adminLinks({ urls: list, ...hint })
+      setMsg(`Added ${r.added} of ${list.length}`); setUrls(''); refresh()
+    } catch (e) { setMsg(e.message) }
   }
-  const ingest = async () => {
-    setMsg('Crawling sources…')
-    try { const r = await api.adminIngest(); setMsg(`Ingest: ${JSON.stringify(r.stats)}`); refresh() } catch (e) { setMsg(e.message) }
+  const run = async (fn, label) => {
+    setMsg(label)
+    try { const r = await fn(); setMsg(JSON.stringify(r.stats || r)); refresh() } catch (e) { setMsg(e.message) }
   }
+  const sel = (key, opts, all) => (
+    <select value={hint[key]} onChange={(e) => setHint({ ...hint, [key]: e.target.value })} aria-label={all}>
+      <option value="">{all}</option>
+      {opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+    </select>
+  )
   return (
     <section className="panel">
       <h3>Curator</h3>
-      {stats && <p className="mono muted small">{stats.total} items · {stats.breakdown.map((b) => `${b.source}/${b.era} ${b.count}`).join(' · ')}</p>}
-      <label className="label mono" htmlFor="tt">Add TikTok videos (one URL per line)</label>
-      <textarea id="tt" rows={4} value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://www.tiktok.com/@creator/video/…" />
+      {stats && (
+        <p className="mono muted small">
+          {stats.total} items · {stats.unresolved_archive} archive files still to look up ·
+          sources on: {Object.entries(stats.sources || {}).filter(([, v]) => v).map(([k]) => k).join(', ')}
+        </p>
+      )}
+      <label className="label mono" htmlFor="tt">Add videos (one link per line: TikTok, YouTube, Instagram, Facebook, X, Dailymotion, Archive)</label>
+      <textarea id="tt" rows={4} value={urls} onChange={(e) => setUrls(e.target.value)}
+        placeholder={'https://www.tiktok.com/@creator/video/…\nhttps://www.instagram.com/reel/…'} />
       <div className="row">
-        <button type="button" className="btn" onClick={addTikToks}>Add TikToks</button>
-        <button type="button" className="btn ghost" onClick={ingest}>Run ingest now</button>
+        {sel('era', meta.eras || [], 'Era: auto')}
+        {sel('topic', meta.topics || [], 'Topic: auto')}
+        {sel('region', meta.regions || [], 'Culture: auto')}
       </div>
-      {msg && <p className="mono small muted">{msg}</p>}
+      <div className="row">
+        <button type="button" className="btn" onClick={addLinks}>Add links</button>
+        <button type="button" className="btn ghost" onClick={() => run(api.adminIngest, 'Crawling sources…')}>Run ingest now</button>
+        <button type="button" className="btn ghost" onClick={() => run(api.adminReclassify, 'Re-labelling…')}>Re-label catalogue</button>
+        <button type="button" className="btn ghost" onClick={() => run(api.adminArchiveUpgrade, 'Finding faster Archive files…')}
+          title="Re-reads Archive items saved by older versions: adds low-quality files and the direct server">
+          Speed up Archive videos{stats?.legacy_archive ? ` (${stats.legacy_archive} left)` : ''}
+        </button>
+      </div>
+      {msg && <p className="mono small muted wrap-any">{msg}</p>}
     </section>
   )
 }
@@ -97,6 +181,8 @@ export default function Profile() {
         <button type="button" className="btn ghost push" onClick={logout}>Sign out</button>
       </header>
       <Collection />
+      <Playback />
+      <Following />
       <Defaults />
       {user.is_admin && <Admin />}
     </div>
