@@ -31,7 +31,8 @@ from .extensions import db
 from .models import Item
 
 log = logging.getLogger("clips")
-CLIP_SECONDS = int(os.environ.get("CLIP_SECONDS", "60"))
+CLIP_SECONDS = int(os.environ.get("CLIP_SECONDS", "30"))     # the feed's default length
+WORKERS = int(os.environ.get("CLIP_WORKERS", "4"))           # encodes at the same time (GitHub runners have 4 cores)
 MAX_CLIPS = int(os.environ.get("MAX_CLIPS", "2400"))     # ~5 GB at 2 MB: keeps the repo healthy
 HEIGHT = int(os.environ.get("CLIP_HEIGHT", "240"))
 ENCODE_V = 1                                              # bump to re-encode everything
@@ -102,12 +103,13 @@ def encode(src: str, dst: Path, start: float, seconds: float = CLIP_SECONDS) -> 
 def _encode(src: str, dst: Path, start: float, seconds: float) -> float:
     audio = _has_audio(src)
     # short side = HEIGHT (so portrait clips aren't blown up), even dimensions, never upscale
-    vf = (f"scale='if(gt(iw,ih),-2,min({HEIGHT},iw))':'if(gt(iw,ih),min({HEIGHT},ih),-2)':flags=bicubic,"
-          "format=yuv420p")
+    # both sides are forced to even numbers (libx264 refuses odd sizes such as 320x213)
+    vf = (f"scale=w='if(gt(iw,ih),-2,min({HEIGHT},trunc(iw/2)*2))':"
+          f"h='if(gt(iw,ih),min({HEIGHT},trunc(ih/2)*2),-2)':flags=bicubic,format=yuv420p")
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
            "-ss", str(start), "-t", str(seconds), "-i", src,
            "-map", "0:v:0", "-vf", vf, "-fpsmax", "24",
-           "-c:v", "libx264", "-preset", "slow", "-profile:v", "main", "-level", "3.0",
+           "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main", "-level", "3.0",
            "-crf", "29", "-maxrate", "230k", "-bufsize", "460k",
            "-x264-params", "keyint=48:min-keyint=24:scenecut=0"]
     if audio:
@@ -129,37 +131,66 @@ def source_url(it: Item) -> str | None:
     return it.media_url or None
 
 
-def run(limit: int, out: Path) -> list[dict]:
-    have = Item.query.filter(Item.source == "archive").all()
-    done_n = sum(1 for i in have if (i.media_info or {}).get("clip", {}).get("v") == ENCODE_V)
+BATCH = 25
+
+
+def _specs(limit: int, done_n: int) -> list[dict]:
+    """Plain values for the clips to make (no ORM objects, so the database can be released)."""
     q = (Item.query.filter(Item.source == "archive", Item.hidden.is_(False), Item.broken < 3,
                            Item.media_url.isnot(None), Item.media_url != "")
          .order_by(Item.engagement.desc(), Item.score.desc(), Item.id))
-    results = []
-    failed = 0
+    out = []
     for it in q:
-        if len(results) >= limit or done_n + len(results) >= MAX_CLIPS:
+        if len(out) >= limit or done_n + len(out) >= MAX_CLIPS:
             break
         if (it.media_info or {}).get("clip", {}).get("v") == ENCODE_V or it.kind == "image":
             continue
         src = source_url(it)
         if not src:
             continue
-        start = clip_from(it)
-        dst = out / f"{it.id}.mp4"
-        try:
-            secs = encode(src, dst, start)
-            if secs < 2:
-                raise RuntimeError("empty output")
-            d = it.duration or 0
-            reached_end = secs < CLIP_SECONDS - 1
-            whole = start == 0 and (reached_end or (d and secs >= d - 1))
-            results.append({"id": it.id, "from": start, "s": round(secs, 1), "whole": bool(whole), "bytes": dst.stat().st_size})
-            log.info("ok %s %.0fs %.1f MB %s", it.id, secs, dst.stat().st_size / 1e6, it.title[:50])
-        except Exception as e:  # noqa: BLE001 - one bad video must not stop the batch
-            failed += 1
-            dst.unlink(missing_ok=True)
-            log.warning("fail %s: %s", it.id, e)
+        out.append({"id": it.id, "src": src, "start": clip_from(it), "duration": it.duration or 0})
+    return out
+
+
+def _make_one(sp: dict, out: Path) -> dict | None:
+    dst = out / f"{sp['id']}.mp4"
+    try:
+        secs = encode(sp["src"], dst, sp["start"])
+        if secs < 2:
+            raise RuntimeError("empty output")
+        d = sp["duration"]
+        reached_end = secs < CLIP_SECONDS - 1
+        whole = sp["start"] == 0 and (reached_end or (d and secs >= d - 1))
+        log.info("ok %s %.0fs %.1f MB", sp["id"], secs, dst.stat().st_size / 1e6)
+        return {"id": sp["id"], "from": sp["start"], "s": round(secs, 1), "whole": bool(whole),
+                "bytes": dst.stat().st_size}
+    except Exception as e:  # noqa: BLE001 - one bad video must not stop the batch
+        dst.unlink(missing_ok=True)
+        log.warning("fail %s: %s", sp["id"], str(e)[:200])
+        return None
+
+
+def run(limit: int, out: Path, manifest: Path) -> list[dict]:
+    """Encode up to `limit` clips. The database is released before the first encode (a 30+ minute
+    job would otherwise lose its connection), and the manifest is saved after every batch, so
+    a crash or a timeout keeps everything finished so far."""
+    done_n = sum(1 for (mi,) in db.session.query(Item.media_info).filter(Item.source == "archive")
+                 if (mi or {}).get("clip", {}).get("v") == ENCODE_V)
+    specs = _specs(limit, done_n)
+    db.session.remove()
+    manifest.write_text("[]")
+    from concurrent.futures import ThreadPoolExecutor
+    results, failed = [], 0
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for i in range(0, len(specs), BATCH):
+            chunk = specs[i:i + BATCH]
+            for r in pool.map(lambda sp: _make_one(sp, out), chunk):
+                if r:
+                    results.append(r)
+                else:
+                    failed += 1
+            manifest.write_text(json.dumps(results))      # saved after every batch
+            log.info("progress %d/%d: %d made, %d failed", min(i + BATCH, len(specs)), len(specs), len(results), failed)
     log.info("encoded %d, failed %d, already done %d", len(results), failed, done_n)
     return results
 
@@ -194,8 +225,7 @@ def main():
             return
         if not shutil.which("ffmpeg"):
             raise SystemExit("ffmpeg not found")
-        res = run(a.limit, a.out)
-        a.manifest.write_text(json.dumps(res))
+        run(a.limit, a.out, a.manifest)
 
 
 if __name__ == "__main__":

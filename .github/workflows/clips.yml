@@ -12,7 +12,7 @@ on:
   schedule: [{ cron: "30 5 * * *" }]   # daily, after the 04:00 ingest
   workflow_dispatch:
     inputs:
-      limit: { description: "Clips to make in this run", default: "150" }
+      limit: { description: "Clips to make in this run", default: "300" }
 permissions:
   contents: write                      # lets the built-in token push the `clips` branch
 concurrency: { group: clips, cancel-in-progress: false }
@@ -55,9 +55,13 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python -m app.clips --limit "${{ github.event.inputs.limit || '150' }}" --out ../clips-repo/c --manifest ../clips-manifest.json
+          CLIP_SECONDS: "30"          # matches the feed's default length: half the work and size of 60 s
+          CLIP_WORKERS: "4"
+        run: python -m app.clips --limit "${{ github.event.inputs.limit || '300' }}" --out ../clips-repo/c --manifest ../clips-manifest.json
 
       - name: Publish to the clips branch
+        if: always()          # publish what was made, even if encoding stopped early
+        id: publish
         run: |
           set -e
           cd clips-repo
@@ -68,6 +72,7 @@ jobs:
 
       # Only after the files are published: tell the app they exist.
       - name: Tell the app
+        if: steps.publish.outcome == 'success'
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

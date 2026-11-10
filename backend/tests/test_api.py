@@ -314,10 +314,10 @@ def test_clips_job_picks_start_encodes_and_applies(app, tmp_path, monkeypatch):
             return 40.0 if "short" in src else 60.0
         monkeypatch.setattr(clips, "encode", fake_encode)
         out = tmp_path / "c"
-        res = clips.run(10, out)
+        res = clips.run(10, out, tmp_path / "m.json")
         assert [c[0] for c in calls] == ["song", "film", "short"]   # most engaging first; done/hidden skipped
         assert {r["id"]: r["whole"] for r in res} == {song.id: False, film.id: False, short.id: True}
         assert (out / f"{song.id}.mp4").exists()
         assert clips.apply(res) == 3
         assert db.session.get(Item, song.id).media_info["clip"] == {"v": clips.ENCODE_V, "from": 62, "s": 60.0, "whole": False}
-        assert clips.run(10, tmp_path / "again") == []                # everything is done now
+        assert clips.run(10, tmp_path / "again", tmp_path / "m2.json") == []   # everything is done now

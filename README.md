@@ -18,8 +18,9 @@ Archive.org serves every file from one server in the US, so Archive videos are s
 TikTok and Reels are fast because each video is a tiny file on a nearby server. v11 does that
 for your Archive videos, with no bucket and no API keys:
 
-- `backend/app/clips.py` makes **one small MP4 per Archive video**: its best 60 seconds, 240p,
-  about 270 kbps (**roughly 2 MB**), index at the front so it starts after the first few KB.
+- `backend/app/clips.py` makes **one small MP4 per Archive video**: its best **30 seconds**, 240p,
+  about 200 kbps (**roughly 0.6 MB**), index at the front so it starts after the first few KB.
+  Four encodes run at once, so all 1,310 videos take well under an hour on GitHub's runner.
   Music videos start around the first chorus; long films skip the logos.
 - A GitHub Action (`.github/workflows/clips.yml`) runs it on GitHub's free servers and saves the
   files on a branch called `clips` of this same repo. **Cloudflare Pages** serves that branch:
@@ -32,7 +33,7 @@ for your Archive videos, with no bucket and no API keys:
 ### Setup (about 10 minutes, once)
 1. GitHub repo -> Settings -> Secrets and variables -> Actions -> New repository secret:
    `DATABASE_URL` = your Neon link.
-2. GitHub repo -> Actions -> **clips** -> Run workflow (limit 150). The first run creates the `clips` branch.
+2. GitHub repo -> Actions -> **clips** -> Run workflow (limit 300). The first run creates the `clips` branch. Expect roughly 5 minutes per 300 clips.
 3. Cloudflare (free account) -> Workers & Pages -> Create -> **Pages** -> Connect to Git -> pick this repo ->
    production branch **`clips`** -> framework "None", build command empty, output directory empty (or `/`) -> Deploy.
    Copy the address (`https://<project>.pages.dev`).
@@ -40,10 +41,9 @@ for your Archive videos, with no bucket and no API keys:
 5. Check: open `https://<project>.pages.dev/c/<number>.mp4` for any clip the Action made (see the
    `clips` branch on GitHub): it should play.
 
-After that it runs by itself every day (150 clips/run) and the app picks new clips up automatically.
-To do the first batch faster, run the Action several times with a bigger limit (e.g. 250).
-1,310 videos is about 2.6 GB; the cap is `MAX_CLIPS` (default 2400, about 5 GB, GitHub's comfortable
-repo size). `CLIP_SECONDS=30` (Action env) halves the size if you ever need room.
+After that it runs by itself every day (300 clips/run) and the app picks new clips up automatically.
+To do the first batch faster, run the Action a few times with limit 500.
+1,310 videos is about 0.8 GB; the cap is `MAX_CLIPS` (default 2400, about 1.5 GB at 30 s).
 
 Only Archive videos are re-hosted (they are public-domain / openly licensed). YouTube, Dailymotion and
 TikTok stay as embeds: re-hosting those isn't allowed.
