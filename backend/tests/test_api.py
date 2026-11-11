@@ -274,9 +274,12 @@ def test_hosted_clip_is_served_only_when_clips_base_is_set(app):
         assert it.to_dict()["clip"] is None
         app.config["CLIPS_BASE"] = "http://insecure.example"          # https only
         assert it.to_dict()["clip"] is None
-        app.config["CLIPS_BASE"] = "https://opp-clips.pages.dev"
+        app.config["CLIPS_BASE"] = "https://me.github.io/opp.tik.dot"
         c = it.to_dict()["clip"]
-        assert c == {"url": f"https://opp-clips.pages.dev/c/{iid}.mp4?v=1", "s": 60.0, "from": 48, "whole": False}
+        assert c == {"url": f"https://me.github.io/opp.tik.dot/c/{iid}.mp4?v=1", "url144": None,
+                     "s": 60.0, "from": 48, "whole": False}       # a v11 clip: 240p only
+        it.media_info = {"clip": {"v": 1, "from": 48, "s": 60.0, "whole": False, "q": [240, 144]}}
+        assert it.to_dict()["clip"]["url144"] == f"https://me.github.io/opp.tik.dot/c/{iid}-144.mp4?v=1"
         plain = Item(source="archive", external_id="p", url="u", title="t", era="90s", category="ads", tax_v=99)
         assert plain.to_dict()["clip"] is None                        # no clip made yet
 
@@ -307,17 +310,36 @@ def test_clips_job_picks_start_encodes_and_applies(app, tmp_path, monkeypatch):
         assert clips.clip_from(short) == 0
         calls = []
 
-        def fake_encode(src, dst, start, seconds=60):
-            calls.append((src.split("/")[4], start))
+        def fake_encode(src, dst, start, seconds=60, height=240):
+            calls.append((src.split("/")[4], start, height))
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(b"x" * 1000)
             return 40.0 if "short" in src else 60.0
         monkeypatch.setattr(clips, "encode", fake_encode)
         out = tmp_path / "c"
         res = clips.run(10, out, tmp_path / "m.json")
-        assert [c[0] for c in calls] == ["song", "film", "short"]   # most engaging first; done/hidden skipped
-        assert {r["id"]: r["whole"] for r in res} == {song.id: False, film.id: False, short.id: True}
-        assert (out / f"{song.id}.mp4").exists()
-        assert clips.apply(res) == 3
-        assert db.session.get(Item, song.id).media_info["clip"] == {"v": clips.ENCODE_V, "from": 62, "s": 60.0, "whole": False}
+        # most engaging first, both sizes each; the v11 clip ("done") only gets its missing 144p, same start
+        assert sorted(calls) == sorted([("song", 62, 240), ("song", 62, 144), ("film", 180, 240), ("film", 180, 144),
+                                        ("short", 0, 240), ("short", 0, 144), ("done", 0, 144)])
+        assert [r["id"] for r in res] == [song.id, film.id, short.id, done.id]       # queue order: most engaging first
+        assert {r["id"]: r["whole"] for r in res} == {song.id: False, film.id: False, short.id: True, done.id: False}
+        assert (out / f"{song.id}.mp4").exists() and (out / f"{song.id}-144.mp4").exists()
+        assert clips.apply(res) == 4
+        c = db.session.get(Item, song.id).media_info["clip"]
+        assert {k: c[k] for k in ("v", "from", "s", "whole", "q")} == {"v": clips.ENCODE_V, "from": 62, "s": 60.0, "whole": False, "q": [240, 144]}
+        assert db.session.get(Item, done.id).media_info["clip"]["q"] == [240, 144]
         assert clips.run(10, tmp_path / "again", tmp_path / "m2.json") == []   # everything is done now
+
+        # The 1 GB GitHub Pages limit: nothing new once the budget is used up.
+        extra = mk("extra", duration=100, engagement=0.1)
+        db.session.add(extra)
+        db.session.commit()
+        monkeypatch.setattr(clips, "MAX_MB", clips.used_mb([mi for (mi,) in db.session.query(Item.media_info)]) + 0.5)
+        assert clips.run(10, tmp_path / "full", tmp_path / "m3.json") == []
+
+def test_meta_sends_sponsor_and_dailymotion_player_but_no_cloudflare(app, client):
+    m = client.get("/api/meta").get_json()
+    assert m["sponsor"] is None and m["dm_player"] == "" and "media_base" not in m
+    app.config.update(SPONSOR_TITLE="Abela", SPONSOR_URL="http://not-https.example", DM_PLAYER_ID="x1ab2")
+    m = client.get("/api/meta").get_json()
+    assert m["sponsor"] == {"title": "Abela", "text": "", "url": "", "image": ""} and m["dm_player"] == "x1ab2"

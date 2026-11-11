@@ -42,20 +42,23 @@ const subscribe = (fn) => { subs.add(fn); return () => subs.delete(fn) }
 export function useClipLength() { return useSyncExternalStore(subscribe, () => len) }
 
 /*
- * v11: a hosted clip (item.clip = {url, s, from, whole}) is a small 240p file of the video's best
- * `s` seconds, made by backend/app/clips.py and served by Cloudflare Pages (free, unlimited
- * bandwidth, close to Lebanon). It is used whenever the chosen length fits inside it (30 s and
- * 1 min by default), or when it already contains the whole video. Longer lengths and "Watch
- * full" play the original, from the same spot. If the hosted file ever fails, the player uses the
- * original instead.
+ * Hosted clips (item.clip = {url, url144, s, from, whole}): small files of the video's best `s`
+ * seconds, made by backend/app/clips.py and published free by GitHub Pages. `url` is 240p,
+ * `url144` is 144p. Data saver plays the 144p one, Auto the 240p one (Auto never goes below
+ * 240p), HD plays the original (480p or higher). They are used whenever the chosen length fits
+ * inside the clip (30 s by default), or when the clip already is the whole video. Longer lengths
+ * and "Watch full" play the original, from the same spot. If a hosted file ever fails, the
+ * player uses the original instead.
  */
-export function hostedWindow(item, length) {
+export function hostedWindow(item, length, mode = 'auto') {
   const c = item?.clip
-  if (!c?.url || !c.s) return null
+  if (!c?.s || mode === 'hd') return null
+  const url = mode === 'saver' ? c.url144 || c.url : c.url
+  if (!url) return null
   const fits = length && length <= c.s + 1
   if (!fits && !c.whole) return null
   const whole = Boolean(c.whole && (!length || length >= c.s - 1))
-  return { from: 0, to: length ? Math.min(length, c.s) : null, hosted: true, whole }
+  return { from: 0, to: length ? Math.min(length, c.s) : null, hosted: true, whole, url }
 }
 
 const MUSIC = new Set(['music', 'music_videos', 'musicvideo'])
@@ -68,7 +71,6 @@ const MUSIC = new Set(['music', 'music_videos', 'musicvideo'])
  *  - Music videos jump to ~a quarter in, where the first chorus usually is.
  *  - Long films / compilations keep the server's start point (past the logos and leader).
  *  - Everything else skips a short intro.
- *  - HLS copies on the CDN are already cut at their start point, so they start at 0.
  */
 export function clipWindow(item, length) {
   if (!item || !length || item.kind === 'image') return null
@@ -76,8 +78,7 @@ export function clipWindow(item, length) {
   const d = item.duration || 0
   if (d && d <= length * 1.25) return null
   let from
-  if (item.hls) from = 0
-  else if (item.start) from = item.start
+  if (item.start) from = item.start
   else if (!d) from = 0
   else if (item.topics?.some((t) => MUSIC.has(t.id)) || MUSIC.has(item.category)) from = Math.min(d * 0.26, 80)
   else from = d > 90 ? Math.min(d * 0.08, 20) : 0

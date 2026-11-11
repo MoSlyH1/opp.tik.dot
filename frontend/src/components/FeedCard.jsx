@@ -3,9 +3,11 @@ import { api } from '../api.js'
 import { useAuth } from '../context.js'
 import { fmtTime, frameFor, isTall, playerKind, shareUrl } from '../embed.js'
 import { track } from '../lib/events.js'
-import { MODES, TIER_LABEL, reportStall, reportStart, setMode, useQuality } from '../lib/quality.js'
+import { MODES, qualityLabel, reportStall, reportStart, setMode, useQuality } from '../lib/quality.js'
 import { LENGTHS, clipWindow, hostedWindow, setClipLength, useClipLength } from '../lib/clip.js'
 import Icon from './Icon.jsx'
+import LoadingLogo from './LoadingLogo.jsx'
+import Sponsor from './Sponsor.jsx'
 import Player from './players/Player.jsx'
 
 /*
@@ -51,11 +53,11 @@ function Action({ icon, label, on, onClick, count, children }) {
 
 function CardUI({
   item, active, chrome, muted, paused, play, onTogglePause, onToggleMute, onToggleChrome, onPoke,
-  onChange, onHide, seek, clip, onFull, slow, onSkip,
+  onChange, onHide, seek, clip, onFull, slow, late, onSkip,
 }) {
   const { user, setUser } = useAuth() || {}
   const length = useClipLength()
-  const { mode, tier } = useQuality()
+  const { mode, h } = useQuality()
   const [hearts, setHearts] = useState([])
   const [toast, setToast] = useState('')
   const [flash, setFlash] = useState(null)
@@ -199,8 +201,9 @@ function CardUI({
   const frac = scrub != null && d ? scrub / d : clip ? clipFrac : d ? Math.min(1, play.t / d) : 0
   // "Watch full" teaser: shows in the last seconds of a clip (and whenever controls are up).
   const teaser = clip && !clip.whole && active && play.started && (showChrome || play.t >= clip.to - 7)
-  const loading = active && (!play.started || play.buffering) && !paused
-  const qLabel = mode === 'auto' ? `Auto · ${TIER_LABEL[tier]}` : MODES.find((m) => m.id === mode)?.label
+  const waiting = active && !play.started && !paused        // not started yet
+  const loading = waiting || (active && play.buffering && !paused)
+  const qLabel = qualityLabel(mode, h)
 
   return (
     <div ref={wrap} className={`ui ${showChrome ? 'show' : ''}`}>
@@ -208,12 +211,22 @@ function CardUI({
         aria-label={showChrome ? 'Hide controls' : 'Show controls'}
         onPointerDown={(e) => { ptr.current = e.pointerType || 'touch' }} onClick={onTap} />
 
-      {loading && <div className="loader" aria-hidden="true"><span /></div>}
-      {active && !play.started && !paused && (
-        <div className="intro waiting" aria-hidden="true">
-          <span className="badge solid mono">{yearLabel}</span>
-          <span className="intro-title">{item.title}</span>
+      {/* v12 loading card: only when a video takes more than ~1 s to start. The thumbnail stays
+          behind it, your logo turns in the middle, a "Sponsored" box sits at the bottom.
+          Gone the moment the video plays. */}
+      {waiting && late && (
+        <div className="load-card" aria-live="polite">
+          <LoadingLogo size={76} />
+          <div className="load-label" aria-hidden="true">
+            <span className="badge solid mono">{yearLabel}</span>
+            <span className="intro-title">{item.title}</span>
+          </div>
+          <Sponsor />
         </div>
+      )}
+      {/* Mid-video buffering: just the logo. */}
+      {active && play.started && play.buffering && !paused && (
+        <div className="loader" aria-hidden="true"><LoadingLogo size={52} /></div>
       )}
       {active && slow && !play.started && !paused && (
         <button type="button" className="slow-chip" onClick={(e) => { e.stopPropagation(); onSkip?.() }}>
@@ -305,7 +318,7 @@ function CardUI({
             <div className="q-options">
               {MODES.map((m) => (
                 <button key={m.id} type="button" className={`q-opt ${mode === m.id ? 'on' : ''}`} onClick={() => setMode(m.id)}>
-                  <strong>{m.id === 'auto' ? `Auto (${TIER_LABEL[mode === 'auto' ? tier : 'mid']})` : m.label}</strong>
+                  <strong>{m.id === mode && m.id !== 'saver' ? `${m.label} · ${h}p` : m.label}</strong>
                   <span>{m.hint}</span>
                 </button>
               ))}
@@ -343,9 +356,11 @@ function FeedCard({
   const [play, setPlay] = useItemState(item.id, P0)
   const [full, setFull] = useItemState(item.id, false)   // "Watch full" tapped for this video
   const [slow, setSlow] = useItemState(item.id, false)   // no first frame after a few seconds
+  const [late, setLate] = useItemState(item.id, false)   // no first frame after ~1 s: loading card
   const length = useClipLength()
-  // v11: a hosted clip when the chosen length fits in it, else a window of the original.
-  const hosted = full ? null : hostedWindow(item, length)
+  const { mode } = useQuality()
+  // A hosted clip (144p saver / 240p auto) when the chosen length fits in it, else a window of the original.
+  const hosted = full ? null : hostedWindow(item, length, mode)
   let win = hosted || clipWindow(item, length)
   // Length unknown until the player reports it: a short video turns out to need no clip.
   if (win && !hosted && !item.duration && play.d && play.d <= length * 1.25) win = null
@@ -400,9 +415,10 @@ function FeedCard({
   // move on by itself, so a weak connection never leaves you staring at a spinner.
   useEffect(() => {
     if (!active || play.started || paused) return undefined
+    const t0 = setTimeout(() => setLate(true), 1000)
     const t1 = setTimeout(() => setSlow(true), 4500)
     const t2 = setTimeout(() => onSkip?.(item.id), 12000)
-    return () => { clearTimeout(t1); clearTimeout(t2) }
+    return () => { clearTimeout(t0); clearTimeout(t1); clearTimeout(t2) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, item.id, play.started, paused])
 
@@ -465,7 +481,7 @@ function FeedCard({
             <CardUI key={item.id} item={item} active={active} chrome={chrome} muted={muted} paused={paused} play={play}
               onTogglePause={onTogglePause} onToggleMute={onToggleMute} onToggleChrome={onToggleChrome} onPoke={onPoke}
               onChange={onChange} onHide={onHide} seek={(s) => control.current.seek?.(s)}
-              clip={clipped} onFull={() => setFull({ at: item.clip ? item.clip.from + (play.t || 0) : null })} slow={slow} onSkip={() => onSkip?.(item.id)} />
+              clip={clipped} onFull={() => setFull({ at: item.clip ? item.clip.from + (play.t || 0) : null })} slow={slow} late={late} onSkip={() => onSkip?.(item.id)} />
           )}
         </div>
       </div>

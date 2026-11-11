@@ -1,12 +1,12 @@
-# v11: make a small hosted clip for the most-watched Internet Archive videos and publish them
-# on the `clips` branch, which Cloudflare Pages serves for free (unlimited bandwidth).
+# Small hosted clips (144p + 240p) for the most-watched Internet Archive videos, published on the
+# `clips` branch, which GitHub Pages serves for free. No Cloudflare.
 #
-# One-time setup (see README, "What's new in v11"):
+# One-time setup (see README, "What's new in v12"):
 #   1. Repo -> Settings -> Secrets and variables -> Actions -> New secret: DATABASE_URL (your Neon link)
 #   2. Actions -> clips -> Run workflow (creates the `clips` branch)
-#   3. Cloudflare -> Workers & Pages -> Create -> Pages -> Connect to Git -> this repo, branch `clips`
-#   4. Vercel -> Environment Variables -> CLIPS_BASE = https://<your-project>.pages.dev
-# After that it runs by itself every day and adds more clips.
+#   3. Repo -> Settings -> Pages -> Source: Deploy from a branch -> branch `clips`, folder / (root) -> Save
+#   4. Vercel -> Environment Variables -> CLIPS_BASE = https://<your-user>.github.io/<repo>   (no slash at the end)
+# After that it runs by itself every day and adds more clips (stops near GitHub Pages' 1 GB limit).
 name: clips
 on:
   schedule: [{ cron: "30 5 * * *" }]   # daily, after the 04:00 ingest
@@ -45,11 +45,9 @@ jobs:
             git checkout -q --orphan clips
           fi
           mkdir -p c
-          cat > _headers <<'H'
-          /c/*
-            Cache-Control: public, max-age=31536000, immutable
-            Access-Control-Allow-Origin: *
-          H
+          git rm -q --cached --ignore-unmatch _headers   # v11 Cloudflare file, not needed any more
+          touch .nojekyll                                 # GitHub Pages: publish the files as they are
+          printf 'opp.tik.dot clips\n' > index.html
 
       - name: Encode clips
         working-directory: backend
@@ -57,6 +55,8 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           CLIP_SECONDS: "30"          # matches the feed's default length: half the work and size of 60 s
           CLIP_WORKERS: "4"
+          CLIP_QUALITIES: "240,144"   # 240p for Auto, 144p for Data saver
+          CLIPS_MAX_MB: "950"         # GitHub Pages sites must stay under 1 GB
         run: python -m app.clips --limit "${{ github.event.inputs.limit || '300' }}" --out ../clips-repo/c --manifest ../clips-manifest.json
 
       - name: Publish to the clips branch
@@ -65,7 +65,7 @@ jobs:
         run: |
           set -e
           cd clips-repo
-          git add --ignore-removal _headers c   # add only: files from earlier runs are not on disk here, never delete them
+          git add --ignore-removal .nojekyll index.html c   # add only: files from earlier runs are not on disk here, never delete them
           if git diff --cached --quiet; then echo "nothing new"; exit 0; fi
           git commit -q -m "clips: $(ls c | wc -l) new"
           git push -q origin clips

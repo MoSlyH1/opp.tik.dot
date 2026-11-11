@@ -1,13 +1,17 @@
-"""v11: one small hosted clip per Internet Archive video, served free by Cloudflare Pages.
+"""Small hosted clips for Internet Archive videos, served free by GitHub Pages.
 
 Why: archive.org serves every file from a single server in the US. TikTok / Reels are fast
-because each video is a tiny file on a server near you. This makes that tiny file: the best
-CLIP_SECONDS (default 60) of the video, 240p, ~200 kbps (about 2 MB), MP4 with the index at
-the front so playback starts after the first few KB.
+because each video is a tiny file on a server near you. This makes those tiny files: the best
+CLIP_SECONDS (default 30) of the video, MP4 with the index at the front so playback starts
+after the first few KB, in two sizes:
 
-Where the files go: a git branch called `clips` of your own repo, which Cloudflare Pages
-deploys (unlimited bandwidth, 20,000 files, 25 MB per file, no bucket, no API keys).
-The GitHub Action in .github/workflows/clips.yml does all of it. See the README.
+  c/<id>.mp4      240p, ~230 kbps  (~0.6 MB)  -> Auto
+  c/<id>-144.mp4  144p, ~110 kbps  (~0.35 MB) -> Data saver
+
+Where the files go: a git branch called `clips` of your own repo, published by GitHub Pages
+(free, served from Fastly's CDN, no bucket, no API keys, no Cloudflare). GitHub Pages sites
+must stay under 1 GB, so the job stops at CLIPS_MAX_MB (default 950) and gives the clips to
+the most-watched videos first. The GitHub Action in .github/workflows/clips.yml does all of it.
 
   python -m app.clips --limit 150 --out ../clips-repo/c --manifest ../clips-manifest.json
   python -m app.clips --apply ../clips-manifest.json        # after the files are pushed
@@ -33,9 +37,29 @@ from .models import Item
 log = logging.getLogger("clips")
 CLIP_SECONDS = int(os.environ.get("CLIP_SECONDS", "30"))     # the feed's default length
 WORKERS = int(os.environ.get("CLIP_WORKERS", "4"))           # encodes at the same time (GitHub runners have 4 cores)
-MAX_CLIPS = int(os.environ.get("MAX_CLIPS", "2400"))     # ~5 GB at 2 MB: keeps the repo healthy
-HEIGHT = int(os.environ.get("CLIP_HEIGHT", "240"))
-ENCODE_V = 1                                              # bump to re-encode everything
+MAX_CLIPS = int(os.environ.get("MAX_CLIPS", "2400"))      # videos with a hosted clip, at most
+MAX_MB = float(os.environ.get("CLIPS_MAX_MB", "950"))      # GitHub Pages sites must stay under 1 GB
+ENCODE_V = 1                                               # bump to re-encode everything
+
+# One file per size. 240p keeps the v11 name (c/<id>.mp4), so clips made before still work.
+VARIANTS = {
+    240: {"suffix": "", "crf": 29, "maxrate": "230k", "bufsize": "460k", "abr": "40k", "ar": "32000", "fps": 24},
+    144: {"suffix": "-144", "crf": 30, "maxrate": "110k", "bufsize": "220k", "abr": "32k", "ar": "22050", "fps": 20},
+}
+WANT = [q for q in (int(x) for x in os.environ.get("CLIP_QUALITIES", "240,144").split(",") if x.strip()) if q in VARIANTS]
+EST_MB = {240: 0.75, 144: 0.4}     # budget estimate before a file exists (30 s)
+
+
+def have(info: dict | None) -> list[int]:
+    """Sizes already hosted for an item (clips from v11 are 240p only)."""
+    c = (info or {}).get("clip") or {}
+    if c.get("v") != ENCODE_V:
+        return []
+    return list(c.get("q") or [240])
+
+
+def file_name(item_id: int, q: int) -> str:
+    return f"{item_id}{VARIANTS[q]['suffix']}.mp4"
 
 
 def clip_from(it: Item) -> int:
@@ -73,14 +97,14 @@ def _has_audio(src: str) -> bool:
 MAX_DOWNLOAD = 600 * 1024 * 1024      # fallback download cap per video
 
 
-def encode(src: str, dst: Path, start: float, seconds: float = CLIP_SECONDS) -> float:
+def encode(src: str, dst: Path, start: float, seconds: float = CLIP_SECONDS, height: int = 240) -> float:
     """src (file or URL) -> small faststart MP4. Returns the clip length in seconds.
 
     ffmpeg seeks straight to `start` over HTTP range requests (archive.org supports them).
     If that fails (a server without range support, or an index at the end of the file), the
     video is downloaded once and cut locally."""
     try:
-        return _encode(src, dst, start, seconds)
+        return _encode(src, dst, start, seconds, height)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         if not src.startswith("http"):
             raise
@@ -97,23 +121,25 @@ def encode(src: str, dst: Path, start: float, seconds: float = CLIP_SECONDS) -> 
                     if got > MAX_DOWNLOAD:
                         raise RuntimeError("source too big to download")
                     f.write(chunk)
-            return _encode(str(local), dst, start, seconds)
+            return _encode(str(local), dst, start, seconds, height)
 
 
-def _encode(src: str, dst: Path, start: float, seconds: float) -> float:
+def _encode(src: str, dst: Path, start: float, seconds: float, height: int = 240) -> float:
+    v = VARIANTS[height]
     audio = _has_audio(src)
-    # short side = HEIGHT (so portrait clips aren't blown up), even dimensions, never upscale
+    # short side = height (so portrait clips aren't blown up), even dimensions, never upscale
     # both sides are forced to even numbers (libx264 refuses odd sizes such as 320x213)
-    vf = (f"scale=w='if(gt(iw,ih),-2,min({HEIGHT},trunc(iw/2)*2))':"
-          f"h='if(gt(iw,ih),min({HEIGHT},trunc(ih/2)*2),-2)':flags=bicubic,format=yuv420p")
+    vf = (f"scale=w='if(gt(iw,ih),-2,min({height},trunc(iw/2)*2))':"
+          f"h='if(gt(iw,ih),min({height},trunc(ih/2)*2),-2)':flags=bicubic,format=yuv420p")
+    gop = v["fps"] * 2
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
            "-ss", str(start), "-t", str(seconds), "-i", src,
-           "-map", "0:v:0", "-vf", vf, "-fpsmax", "24",
+           "-map", "0:v:0", "-vf", vf, "-fpsmax", str(v["fps"]),
            "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main", "-level", "3.0",
-           "-crf", "29", "-maxrate", "230k", "-bufsize", "460k",
-           "-x264-params", "keyint=48:min-keyint=24:scenecut=0"]
+           "-crf", str(v["crf"]), "-maxrate", v["maxrate"], "-bufsize", v["bufsize"],
+           "-x264-params", f"keyint={gop}:min-keyint={gop // 2}:scenecut=0"]
     if audio:
-        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "40k", "-ac", "1", "-ar", "32000"]
+        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", v["abr"], "-ac", "1", "-ar", v["ar"]]
     else:
         cmd += ["-an"]
     cmd += ["-movflags", "+faststart", "-f", "mp4", str(dst)]
@@ -134,49 +160,85 @@ def source_url(it: Item) -> str | None:
 BATCH = 25
 
 
-def _specs(limit: int, done_n: int) -> list[dict]:
-    """Plain values for the clips to make (no ORM objects, so the database can be released)."""
+def used_mb(infos) -> float:
+    """Megabytes already on the clips site (estimated for clips made before sizes were recorded)."""
+    total = 0.0
+    for info in infos:
+        c = (info or {}).get("clip") or {}
+        if c.get("v") != ENCODE_V:
+            continue
+        total += c["b"] / 1e6 if c.get("b") else sum(EST_MB.get(q, 0.75) for q in (c.get("q") or [240]))
+    return total
+
+
+def _specs(limit: int) -> tuple[list[dict], int]:
+    """Plain values for the clips to make (no ORM objects, so the database can be released).
+    Most-watched videos first; videos that already have a clip only get the sizes they lack,
+    cut from the same start so switching quality keeps the same moment."""
+    infos = [mi for (mi,) in db.session.query(Item.media_info).filter(Item.source == "archive")]
+    budget = MAX_MB - used_mb(infos)
+    done_n = sum(1 for mi in infos if have(mi))
     q = (Item.query.filter(Item.source == "archive", Item.hidden.is_(False), Item.broken < 3,
                            Item.media_url.isnot(None), Item.media_url != "")
          .order_by(Item.engagement.desc(), Item.score.desc(), Item.id))
     out = []
     for it in q:
-        if len(out) >= limit or done_n + len(out) >= MAX_CLIPS:
+        if len(out) >= limit:
             break
-        if (it.media_info or {}).get("clip", {}).get("v") == ENCODE_V or it.kind == "image":
+        if it.kind == "image":
+            continue
+        got = have(it.media_info)
+        need = [x for x in WANT if x not in got]
+        if not need or (not got and done_n >= MAX_CLIPS):
+            continue
+        cost = sum(EST_MB[x] for x in need)
+        if cost > budget:
             continue
         src = source_url(it)
         if not src:
             continue
-        out.append({"id": it.id, "src": src, "start": clip_from(it), "duration": it.duration or 0})
-    return out
+        c = (it.media_info or {}).get("clip") or {}
+        start = c["from"] if got else clip_from(it)
+        out.append({"id": it.id, "src": src, "start": start, "duration": it.duration or 0, "need": need,
+                    "s": c.get("s") if got else None, "whole": c.get("whole") if got else None})
+        budget -= cost
+        done_n += 0 if got else 1
+    return out, done_n
 
 
 def _make_one(sp: dict, out: Path) -> dict | None:
-    dst = out / f"{sp['id']}.mp4"
+    made, size = [], 0
+    secs, whole = sp.get("s"), sp.get("whole")
     try:
-        secs = encode(sp["src"], dst, sp["start"])
-        if secs < 2:
-            raise RuntimeError("empty output")
-        d = sp["duration"]
-        reached_end = secs < CLIP_SECONDS - 1
-        whole = sp["start"] == 0 and (reached_end or (d and secs >= d - 1))
-        log.info("ok %s %.0fs %.1f MB", sp["id"], secs, dst.stat().st_size / 1e6)
-        return {"id": sp["id"], "from": sp["start"], "s": round(secs, 1), "whole": bool(whole),
-                "bytes": dst.stat().st_size}
+        for q in sp["need"]:
+            dst = out / file_name(sp["id"], q)
+            try:
+                got = encode(sp["src"], dst, sp["start"], CLIP_SECONDS, q)
+                if got < 2:
+                    raise RuntimeError("empty output")
+            except Exception:
+                dst.unlink(missing_ok=True)
+                raise
+            made.append(q)
+            size += dst.stat().st_size
+            if secs is None:
+                secs = got
+                d = sp["duration"]
+                reached_end = got < CLIP_SECONDS - 1
+                whole = sp["start"] == 0 and (reached_end or (d and got >= d - 1))
+        log.info("ok %s %ss %s %.2f MB", sp["id"], secs, made, size / 1e6)
     except Exception as e:  # noqa: BLE001 - one bad video must not stop the batch
-        dst.unlink(missing_ok=True)
         log.warning("fail %s: %s", sp["id"], str(e)[:200])
-        return None
+        if not made:
+            return None
+    return {"id": sp["id"], "from": sp["start"], "s": round(secs, 1), "whole": bool(whole), "q": made, "bytes": size}
 
 
 def run(limit: int, out: Path, manifest: Path) -> list[dict]:
-    """Encode up to `limit` clips. The database is released before the first encode (a 30+ minute
+    """Encode up to `limit` videos. The database is released before the first encode (a 30+ minute
     job would otherwise lose its connection), and the manifest is saved after every batch, so
     a crash or a timeout keeps everything finished so far."""
-    done_n = sum(1 for (mi,) in db.session.query(Item.media_info).filter(Item.source == "archive")
-                 if (mi or {}).get("clip", {}).get("v") == ENCODE_V)
-    specs = _specs(limit, done_n)
+    specs, done_n = _specs(limit)
     db.session.remove()
     manifest.write_text("[]")
     from concurrent.futures import ThreadPoolExecutor
@@ -191,7 +253,7 @@ def run(limit: int, out: Path, manifest: Path) -> list[dict]:
                     failed += 1
             manifest.write_text(json.dumps(results))      # saved after every batch
             log.info("progress %d/%d: %d made, %d failed", min(i + BATCH, len(specs)), len(specs), len(results), failed)
-    log.info("encoded %d, failed %d, already done %d", len(results), failed, done_n)
+    log.info("encoded %d, failed %d, videos with clips before this run %d", len(results), failed, done_n)
     return results
 
 
@@ -202,7 +264,11 @@ def apply(manifest: list[dict]) -> int:
         if not it:
             continue
         info = dict(it.media_info or {})
-        info["clip"] = {"v": ENCODE_V, "from": r["from"], "s": r["s"], "whole": r["whole"]}
+        old = info.get("clip") or {}
+        prev = have(info)
+        q = sorted(set(prev) | set(r.get("q") or [240]), reverse=True)
+        b = (old.get("b") or (sum(EST_MB.get(x, 0.75) for x in prev) * 1e6 if prev else 0)) + (r.get("bytes") or 0)
+        info["clip"] = {"v": ENCODE_V, "from": r["from"], "s": r["s"], "whole": r["whole"], "q": q, "b": int(b)}
         it.media_info = info
         flag_modified(it, "media_info")
         n += 1

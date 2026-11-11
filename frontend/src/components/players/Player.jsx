@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { frameFor, loadYouTube, playerKind, tiktokUrl } from '../../embed.js'
-import { PLAN, YT_CAP, pickRendition, preconnect, useQuality, viaEdge } from '../../lib/quality.js'
-import { HLS_EST, hlsMode, loadHls } from '../../lib/hls.js'
+import { frameFor, loadDailymotion, loadYouTube, playerKind, tiktokUrl } from '../../embed.js'
+import { PLAN, dmQuality, lowestRendition, pickRendition, preconnect, useQuality, viaEdge, ytCap } from '../../lib/quality.js'
 
 /*
- * One component, five engines. Every engine follows the same contract so the feed
+ * One component, six engines. Every engine follows the same contract so the feed
  * never has to care where a video comes from:
  *
  *   active  -> play NOW (from `item.start`), with the current mute state
@@ -24,7 +23,7 @@ import { HLS_EST, hlsMode, loadHls } from '../../lib/hls.js'
 const useLatest = (v) => { const r = useRef(v); r.current = v; return r }
 
 // ---------------------------------------------------------------- YouTube (IFrame Player API, pooled)
-function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, canBoot, tier, clip }) {
+function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, canBoot, q, clip }) {
   const box = useRef(null)
   const host = useRef(null)
   const player = useRef(null)
@@ -128,9 +127,9 @@ function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, 
   // Buffer the next video in advance (muted, invisible), then park it at the start.
   useEffect(() => {
     const p = player.current
-    if (!ready || !p || !want || active || !warm || warmed.current || !PLAN[tier].warmFull) return
+    if (!ready || !p || !want || active || !warm || warmed.current || !PLAN[q.tier].warmFull) return
     p.mute(); p.playVideo()
-  }, [ready, warm, active, want, tier])
+  }, [ready, warm, active, want, q.tier])
 
   useEffect(() => {
     const p = player.current
@@ -176,8 +175,8 @@ function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, active, want])
 
-  // Quality cap: YouTube's automatic quality follows the size of the player box, so on
-  // slower tiers render the iframe smaller and scale it up to fill the screen.
+  // Quality cap: YouTube's automatic quality follows the size of the player box, so render the
+  // iframe at the width of the target quality (144p / 240p / ...) and scale it up to fill the screen.
   useLayoutEffect(() => {
     const el = box.current
     if (!el) return undefined
@@ -186,7 +185,7 @@ function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, 
     return () => ro.disconnect()
   }, [])
   let style
-  const cap = YT_CAP[tier]
+  const cap = ytCap(q.h, q.mode)
   if (cap && dims?.w && dims?.h) {
     const dpr = window.devicePixelRatio || 1
     let s = cap / (dims.w * dpr)
@@ -201,31 +200,172 @@ function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, 
   )
 }
 
-// Data saver tops out at 240p (hls.js can still drop to 144p on a bad link); Auto at 360p
-// on the mid tier; HD is uncapped. Works for old 3-rung and new 4-rung encodes.
-function capFor(h, tier) {
-  const max = tier === 'low' ? 240 : tier === 'mid' ? 360 : Infinity
-  if (max === Infinity || !h.levels?.length) return -1
-  let cap = 0
-  h.levels.forEach((l, i) => { if ((l.height || 0) <= max) cap = i })
-  return cap
+// ---------------------------------------------------------------- Dailymotion (Player Library, pooled)
+// Same contract as YouTube: one player per slot, created once, then reused with loadContent().
+function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, q, clip }) {
+  const host = useRef(null)
+  const player = useRef(null)
+  const [ready, setReady] = useState(false)
+  const vid = useRef(null)
+  const st = useRef({ playing: false, ever: false, ad: false, clipDone: false, q: false })
+  const was = useRef(false)
+  const want = item?.external_id || null
+  const start = Math.floor(clip ? clip.from : item?.start || 0)
+  const end = clip?.to ?? null
+  const live = useLatest({ active, muted, paused, want, start, end, h: q.h })
+  const calls = useLatest(cb)
+
+  const [boot, setBoot] = useState(false)
+  if (!boot && want && (active || (canBoot && warm))) setBoot(true)
+
+  const safe = (fn) => { try { return fn() } catch { return undefined } }
+
+  useEffect(() => {
+    if (!boot) return undefined
+    let dead = false
+    let made = null
+    const id = `dm-${Math.random().toString(36).slice(2, 10)}`
+    const el = document.createElement('div')
+    el.id = id
+    el.className = 'dm-root'
+    host.current.appendChild(el)
+    loadDailymotion().then((dm) => {
+      if (dead) return null
+      const L = live.current
+      vid.current = L.want
+      return dm.createPlayer(id, {
+        video: L.want,
+        params: { startTime: L.start, mute: true, loop: false, aspectRatio: 'inherit', scaleMode: 'fit' },
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      }).then((p) => {
+        made = p
+        if (dead) { safe(() => p.destroy?.()); return }
+        player.current = p
+        const E = dm.events || {}
+        const on = (name, fn) => { if (E[name]) p.on(E[name], fn) }
+        // Late events from the previous video in this slot: ignore.
+        const mine = (s) => !s?.videoId || s.videoId === vid.current
+        const quality = () => {
+          if (st.current.q) return
+          st.current.q = true
+          safe(() => p.setQuality?.(dmQuality(live.current.h)))
+        }
+        on('VIDEO_PLAYING', (s) => {
+          if (!mine(s)) return
+          const S = st.current
+          S.playing = true; S.ever = true; S.ad = false
+          quality()
+          const Lv = live.current
+          if (!Lv.active || !Lv.want) { safe(() => p.pause()); return }   // warm-up: park it
+          calls.current.onBuffering?.(false)
+          calls.current.onPlaying?.(true)
+        })
+        // A pre-roll ad is what's playing: show it rather than a loading screen.
+        on('AD_START', () => {
+          st.current.ad = true
+          if (live.current.active && live.current.want) calls.current.onPlaying?.(true)
+          else safe(() => p.pause())
+        })
+        on('AD_END', () => { st.current.ad = false })
+        on('VIDEO_PAUSE', (s) => {
+          if (!mine(s)) return
+          st.current.playing = false
+          const Lv = live.current
+          if (Lv.active && Lv.want && !Lv.paused) safe(() => p.play())     // paused by the player, not by us
+          else calls.current.onPlaying?.(false)
+        })
+        on('VIDEO_BUFFERING', (s) => { if (mine(s) && live.current.active) calls.current.onBuffering?.(true) })
+        on('VIDEO_TIMECHANGE', (s) => {
+          if (!mine(s)) return
+          const Lv = live.current
+          if (!Lv.active) return
+          const t = Number(s?.videoTime) || 0
+          calls.current.onProgress?.(t, Number(s?.videoDuration) || 0)
+          if (Lv.end == null) return
+          const S = st.current
+          if (t < Lv.end - 2) S.clipDone = false
+          else if (t >= Lv.end - 0.3 && !S.clipDone) {
+            S.clipDone = true
+            if (!calls.current.onClipEnd?.()) { safe(() => p.seek(Lv.start)); calls.current.onLoop?.() }
+          }
+        })
+        on('VIDEO_END', (s) => {
+          if (!mine(s) || !live.current.active) return
+          if (calls.current.onClipEnd?.()) return
+          safe(() => { p.seek(live.current.start); p.play() })
+          calls.current.onLoop?.()
+        })
+        on('PLAYER_ERROR', (s) => {
+          if (live.current.want && mine(s)) calls.current.onFail?.(`dm:${s?.playerError?.code || 'error'}`)
+        })
+        setReady(true)
+      })
+    }).catch(() => { if (!dead) calls.current.onLibFail?.() })
+    return () => {
+      dead = true
+      safe(() => (player.current || made)?.destroy?.())
+      player.current = null
+      if (host.current) host.current.innerHTML = ''
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boot])
+
+  // A different video landed in this slot: swap it inside the live player.
+  useEffect(() => {
+    const p = player.current
+    if (!ready || !p) return
+    if (!want) { safe(() => { p.pause(); p.setMute(true) }); return }
+    if (want === vid.current) return
+    vid.current = want
+    st.current = { playing: false, ever: false, ad: false, clipDone: false, q: false }
+    was.current = false
+    safe(() => { p.setMute(true); p.loadContent({ video: want, startTime: start }) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [want, ready])
+
+  useEffect(() => {
+    const p = player.current
+    if (!ready || !p || !want) return undefined
+    if (!active) { was.current = false; if (st.current.playing) safe(() => p.pause()); safe(() => p.setMute(true)); return undefined }
+    if (paused) { safe(() => p.pause()); return undefined }
+    safe(() => p.setMute(Boolean(live.current.muted)))
+    if (!was.current && st.current.ever) safe(() => p.seek(start))
+    was.current = true
+    safe(() => p.play())
+    // Sound refused by the browser? Retry muted rather than show a play button.
+    const t1 = setTimeout(() => {
+      if (!st.current.playing && !st.current.ad && !live.current.muted) { safe(() => { p.setMute(true); p.play() }); calls.current.onAutoMuted?.() }
+    }, 1800)
+    const t2 = setTimeout(() => { if (!st.current.playing && !st.current.ad) safe(() => p.play()) }, 3500)
+    const t3 = setTimeout(() => { if (!st.current.ever && !st.current.ad) calls.current.onFail?.('dm:stall') }, 15000)
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, ready, paused, want])
+
+  useEffect(() => {
+    const p = player.current
+    if (ready && active && want && p) safe(() => p.setMute(Boolean(muted)))
+  }, [muted, ready, active, want])
+
+  useEffect(() => {
+    if (ready && active && want) control.current = { seek: (sec) => safe(() => player.current?.seek(sec)) }
+  }, [ready, active, want, control])
+
+  return <div ref={host} className="dm-box" style={{ visibility: want ? 'visible' : 'hidden' }} />
 }
 
 // ---------------------------------------------------------------- native <video> (Archive MP4, X, Instagram)
-function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, clip }) {
+function Native({ item, active, warm, ahead, muted, paused, cb, control, q, clip }) {
   const v = useRef(null)
   const calls = useLatest(cb)
   const last = useRef(0)
   const was = useRef(false)
-  // v7: archive clips re-encoded to adaptive HLS on our CDN. Already cut at the start point.
-  const [hlsBad, setHlsBad] = useState(null)
-  // v11: the small hosted clip (Cloudflare Pages) when FeedCard picked it; the original if it fails.
+  // The small hosted clip (GitHub Pages) when FeedCard picked one: 144p in Data saver, 240p in
+  // Auto. If it ever fails, the original plays instead (nobody sees an error).
   const [hostedBad, setHostedBad] = useState(null)
-  const hosted = clip?.hosted && item.clip?.url && hostedBad !== item.id ? item.clip.url : null
-  const hls = !hosted && item.hls && hlsBad !== item.id ? item.hls : null
-  const hlsRef = useRef(null)
-  // HLS copies are already cut at their start point. v9 clips: play [start, end).
-  const start = hosted || hls ? 0 : clip ? (clip.hosted ? item.clip.from : clip.from) : item.start || 0
+  const hosted = clip?.hosted && clip.url && hostedBad !== item.id ? clip.url : null
+  // A hosted clip starts at 0; the original plays [start, end) of the whole video.
+  const start = hosted ? 0 : clip ? (clip.hosted ? item.clip.from : clip.from) : item.start || 0
   const clipLen = clip?.to != null ? clip.to - clip.from : null
   const end = clipLen ? start + clipLen : null
   const clipDone = useRef(false)
@@ -234,57 +374,19 @@ function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, c
     [item.renditions, item.media_url],
   )
 
-  // Which file, and whether we're on the archive.org/download/ fallback. Picked per tier
-  // for each new video; never switched under a video that's already playing well.
-  const [sel, setSel] = useState(() => ({ id: item.id, r: pickRendition(list, tier), fb: false, locked: false }))
+  // Which file, and whether we're on the archive.org/download/ fallback. Picked for the target
+  // quality for each new video; never switched under a video that's already playing well.
+  const fresh = pickRendition(list, q.h, q.min)
+  const [sel, setSel] = useState(() => ({ id: item.id, r: fresh, fb: false, locked: false }))
   let cur = sel
-  const fresh = pickRendition(list, tier)
   if (sel.id !== item.id || (!active && !sel.locked && sel.r !== fresh && !was.current)) {
     cur = { id: item.id, r: fresh, fb: false, locked: false }
     setSel(cur)
   }
   const rend = list[Math.min(cur.r, list.length - 1)] || list[0]
   const file = cur.fb && rend.fallback ? rend.fallback : viaEdge(rend.url)
-  const src = hosted || hls || file + (start ? `#t=${start}` : '')
-  const engine = !hosted && hls ? hlsMode() : 'file'   // 'mse' (hls.js) | 'native' (Safari) | 'file'
-  const live = active || warm || ahead
-
-  // hls.js: attach only for the video on screen and the next ones; the rest hold nothing.
-  useEffect(() => {
-    if (engine !== 'mse' || !live) return undefined
-    let dead = false
-    let h = null
-    loadHls().then((Hls) => {
-      if (dead || !v.current) return
-      v.current.disableRemotePlayback = true   // iOS 17.1+ ManagedMediaSource needs this
-      h = new Hls({
-        abrEwmaDefaultEstimate: HLS_EST[tier],   // first rung picked from what we've measured
-        capLevelToPlayerSize: true,
-        startFragPrefetch: true,
-        maxBufferLength: active ? Math.min(20, clipLen || 20) : 8,   // next video: first 2 chunks only
-        maxMaxBufferLength: 30,
-        backBufferLength: 10,
-        maxBufferSize: 15 * 1000 * 1000,
-      })
-      hlsRef.current = h
-      h.on(Hls.Events.MANIFEST_PARSED, () => { h.autoLevelCapping = capFor(h, tier) })
-      h.on(Hls.Events.ERROR, (_e, d) => {
-        if (!d.fatal) return
-        if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { h.recoverMediaError(); return }
-        setHlsBad(item.id)   // CDN copy unreachable: fall back to the archive.org MP4
-      })
-      h.loadSource(hls)
-      h.attachMedia(v.current)
-    })
-    return () => { dead = true; h?.destroy(); if (hlsRef.current === h) hlsRef.current = null }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, hls, live])
-  useEffect(() => {
-    const h = hlsRef.current
-    if (!h) return
-    h.config.maxBufferLength = active ? Math.min(20, clipLen || 20) : 8
-    h.autoLevelCapping = capFor(h, tier)
-  }, [active, tier, clipLen])
+  const src = hosted || file + (start ? `#t=${start}` : '')
+  const floorR = lowestRendition(list, q.min)
 
   const resumeAt = useRef(null)
   const gotFrame = useRef(false)
@@ -296,7 +398,8 @@ function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, c
     resumeAt.current = el && el.currentTime > 0.5 ? el.currentTime : null
     setSel((s) => ({ ...s, ...patch, locked: true }))
   }
-  const downgrade = () => { if (cur.r > 0) { switchTo({ r: cur.r - 1, fb: false }); return true } return false }
+  // Too slow: a smaller file of the same clip, never below the mode's floor (Auto 240p, HD 480p).
+  const downgrade = () => { if (cur.r > floorR) { switchTo({ r: cur.r - 1, fb: false }); return true } return false }
 
   useEffect(() => { if (v.current) v.current.muted = muted }, [muted])
 
@@ -317,11 +420,11 @@ function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, c
       }
     })
     // No first frame yet after a few seconds: drop to a smaller file of the same clip.
-    // (HLS adapts by itself; it only falls back to the MP4 if it shows nothing for 8 s.)
+    // (A hosted clip is already tiny; it only falls back to the original if it shows nothing for 8 s.)
     const t = setTimeout(() => {
       if (gotFrame.current) return
-      if (hosted) setHostedBad(item.id); else if (hls) setHlsBad(item.id); else downgrade()
-    }, hosted ? 7000 : hls ? 8000 : tier === 'low' ? 3500 : 5000)
+      if (hosted) setHostedBad(item.id); else downgrade()
+    }, hosted ? 8000 : q.tier === 'low' ? 3500 : 5000)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, paused, src])
@@ -333,13 +436,14 @@ function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, c
   // Warm the connection to the storage server of the next videos.
   useEffect(() => {
     if (!(warm || ahead)) return
-    if (hosted) preconnect(hosted); else if (hls) preconnect(hls, engine === 'mse'); else if (file) preconnect(file)
-  }, [warm, ahead, file, hls, hosted, engine])
+    if (hosted) preconnect(hosted); else if (file) preconnect(file)
+  }, [warm, ahead, file, hosted])
 
-  const preload = active ? 'auto' : warm ? (PLAN[tier].warmFull || hls || hosted ? 'auto' : 'metadata') : 'metadata'
+  // The next video: a hosted clip is tiny, so buffer it fully even in Data saver.
+  const preload = active ? 'auto' : warm ? (PLAN[q.tier].warmFull || hosted ? 'auto' : 'metadata') : 'metadata'
 
   return (
-    <video ref={v} className="native" src={engine === 'mse' ? undefined : src}
+    <video ref={v} className="native" src={src}
       muted playsInline loop={end == null} preload={preload}
       disablePictureInPicture controlsList="nodownload noplaybackrate"
       onLoadedMetadata={(e) => {
@@ -352,7 +456,7 @@ function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, c
       onWaiting={() => {
         if (!active) return
         calls.current.onBuffering?.(true)
-        if (!gotFrame.current || hls || hosted) return
+        if (!gotFrame.current || hosted) return
         // Two stalls in 20s: this file is too big for the connection, step down.
         const now = Date.now()
         waits.current = [...waits.current.filter((x) => now - x < 20000), now]
@@ -381,7 +485,6 @@ function Native({ item, active, warm, ahead, muted, paused, cb, control, tier, c
       }}
       onError={(e) => {
         if (hosted) { setHostedBad(item.id); return }                       // hosted copy unreachable: the original
-        if (hls) { if (engine === 'native') setHlsBad(item.id); return }   // hls.js reports its own
         // Direct storage-server link gone (item moved)? Use the always-valid /download/ link.
         if (!cur.fb && rend.fallback && rend.fallback !== rend.url) { switchTo({ fb: true }); return }
         if (downgrade()) return
@@ -450,7 +553,7 @@ function TikTok({ item, active, warm, muted, paused, cb }) {
   )
 }
 
-// ---------------------------------------------------------------- plain autoplay iframe (Dailymotion, Facebook...)
+// ---------------------------------------------------------------- plain autoplay iframe (Facebook, Dailymotion fallback...)
 function Frame({ item, active, muted, cb }) {
   const calls = useLatest(cb)
   const spec = frameFor(item, { muted })
@@ -477,13 +580,17 @@ function Still({ item, active, cb }) {
 
 export default function Player(props) {
   const { item } = props
-  const { tier } = useQuality()
+  const q = useQuality()
   const [nativeFailed, setNativeFailed] = useState(null)
-  const kind = nativeFailed === item.id ? 'frame' : playerKind(item)
-  // Once this slot has a YouTube player, keep it alive (hidden) while the slot shows
-  // other sources, so the next YouTube video here doesn't pay for a new iframe.
+  const [dmBlocked, setDmBlocked] = useState(false)
+  let kind = nativeFailed === item.id ? 'frame' : playerKind(item)
+  if (kind === 'dailymotion' && dmBlocked) kind = 'frame'
+  // Once this slot has a YouTube / Dailymotion player, keep it alive (hidden) while the slot
+  // shows other sources, so the next video of that kind here doesn't pay for a new player.
   const hasYT = useRef(false)
+  const hasDM = useRef(false)
   if (kind === 'youtube') hasYT.current = true
+  if (kind === 'dailymotion') hasDM.current = true
   const cb = {
     ...props.cb,
     // A dead CDN link (expired Instagram URL) falls back to the official embed.
@@ -491,12 +598,14 @@ export default function Player(props) {
       if (kind === 'native' && frameFor(item) && item.source !== 'archive') setNativeFailed(item.id)
       else props.cb.onFail?.(code)
     },
+    // Dailymotion's player library blocked (ad blocker, firewall): its plain embed instead.
+    onLibFail: () => { hasDM.current = false; setDmBlocked(true) },
   }
-  const mount = props.active || props.warm || props.near || (props.ahead && PLAN[tier].ahead >= 2)
+  const mount = props.active || props.warm || props.near || (props.ahead && PLAN[q.tier].ahead >= 2)
   let other = null
-  if (kind !== 'youtube' && mount) {
+  if (kind !== 'youtube' && kind !== 'dailymotion' && mount) {
     switch (kind) {
-      case 'native': other = <Native {...props} tier={tier} cb={cb} />; break
+      case 'native': other = <Native {...props} q={q} cb={cb} />; break
       case 'tiktok': other = <TikTok {...props} cb={cb} />; break
       case 'image': other = <Still {...props} cb={cb} />; break
       default: other = <Frame {...props} cb={cb} />
@@ -504,7 +613,8 @@ export default function Player(props) {
   }
   return (
     <>
-      {hasYT.current && <YouTube {...props} tier={tier} item={kind === 'youtube' ? item : null} cb={cb} />}
+      {hasYT.current && <YouTube {...props} q={q} item={kind === 'youtube' ? item : null} cb={cb} />}
+      {hasDM.current && <Dailymotion {...props} q={q} item={kind === 'dailymotion' ? item : null} cb={cb} />}
       {other}
     </>
   )

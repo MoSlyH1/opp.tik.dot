@@ -33,12 +33,17 @@ class Config:
     CORS_ORIGINS = _list("CORS_ORIGINS") or ["http://localhost:5173", "http://localhost:8080"]
     ADMIN_EMAILS = {e.lower() for e in _list("ADMIN_EMAILS")}
     CRON_SECRET = os.environ.get("CRON_SECRET", "")
-    # v10: address of the free Cloudflare edge Worker (edge-worker/worker.js), e.g.
-    # https://opp-edge.you.workers.dev. Empty = archive.org files go through Vercel (/media).
-    MEDIA_BASE = os.environ.get("MEDIA_BASE", "").strip().rstrip("/")
-    # v11: address of the Cloudflare Pages site that hosts the small clips (the `clips` branch),
-    # e.g. https://opp-clips.pages.dev. Empty = every video plays from its original source.
+    # v12: address of the GitHub Pages site that publishes the small clips (the `clips` branch),
+    # e.g. https://moslyh1.github.io/opp.tik.dot . Empty = every video plays from its original source.
     CLIPS_BASE = os.environ.get("CLIPS_BASE", "").strip().rstrip("/")
+    # v12: optional Dailymotion Player ID (Dailymotion Studio -> Players), to pick your own player
+    # settings. Empty = Dailymotion's default player, which works without an account.
+    DM_PLAYER_ID = os.environ.get("DM_PLAYER_ID", "").strip()
+    # v12: the "Sponsored" box on the loading card. All optional; empty = a house ad for the app.
+    SPONSOR_TITLE = os.environ.get("SPONSOR_TITLE", "").strip()
+    SPONSOR_TEXT = os.environ.get("SPONSOR_TEXT", "").strip()
+    SPONSOR_URL = os.environ.get("SPONSOR_URL", "").strip()
+    SPONSOR_IMAGE = os.environ.get("SPONSOR_IMAGE", "").strip()
 
     COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
     SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "30"))

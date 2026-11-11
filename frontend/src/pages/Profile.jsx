@@ -3,21 +3,21 @@ import { api } from '../api.js'
 import { cleanFilters, saveFilters, useAuth, useMeta } from '../context.js'
 import { FilterSections } from '../components/FilterBar.jsx'
 import Tile from '../components/Tile.jsx'
-import { MODES, TIER_LABEL, setMode, useQuality } from '../lib/quality.js'
+import { MODES, setMode, useQuality } from '../lib/quality.js'
 import { LENGTHS, setClipLength, useClipLength } from '../lib/clip.js'
 
 function Playback() {
-  const { mode, tier } = useQuality()
+  const { mode, h } = useQuality()
   const length = useClipLength()
   return (
     <>
     <section className="panel">
       <h3>Playback quality</h3>
-      <p className="muted small">Lower quality starts faster and uses less data. Auto measures every video start and adjusts.</p>
+      <p className="muted small">Data saver plays 144p. Auto plays 240p or higher and moves up when your videos start instantly. HD plays 480p or higher.</p>
       <div className="q-options wide">
         {MODES.map((m) => (
           <button key={m.id} type="button" className={`q-opt ${mode === m.id ? 'on' : ''}`} onClick={() => setMode(m.id)}>
-            <strong>{m.id === 'auto' && mode === 'auto' ? `Auto · now ${TIER_LABEL[tier]}` : m.label}</strong>
+            <strong>{m.id === mode && m.id !== 'saver' ? `${m.label} · now ${h}p` : m.label}</strong>
             <span>{m.hint}</span>
           </button>
         ))}

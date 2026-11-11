@@ -4,6 +4,7 @@ import { PLAN, useQuality } from '../lib/quality.js'
 import FeedCard from './FeedCard.jsx'
 import Icon from './Icon.jsx'
 import Logo from './Logo.jsx'
+import LoadingLogo from './LoadingLogo.jsx'
 
 /*
  * The vertical feed, built like TikTok / Reels / Shorts rather than on browser scroll:
@@ -173,7 +174,10 @@ export default function Pager({
   }, [index, resetKey])
 
   // ---------------------------------------------------------------- moving
-  const go = useCallback((target, { fromDrag = false } = {}) => {
+  // v12: sound is on from the second video. The first swipe / key / arrow is the viewer's own
+  // gesture, which is what lets browsers play with sound. Unless they muted it themselves.
+  const wantSound = useRef(true)
+  const go = useCallback((target, { fromDrag = false, auto = false } = {}) => {
     const { items: list, rewind: rw, done: dn, h: hh } = live.current
     const cur = idx.current
     const max = list.length - 1 + (dn ? 1 : 0)  // +1: the "you're all caught up" card
@@ -191,11 +195,13 @@ export default function Pager({
       setIndex(next)
       setPaused(false)
       setHint(false)
+      if (!auto && wantSound.current) setMuted(false)
       if (navigator.vibrate && fromDrag) { try { navigator.vibrate(4) } catch { /* not allowed */ } }
     }
     return next !== cur
   }, [flashNotice, setY])
 
+  const toggleMute = useCallback(() => setMuted((m) => { wantSound.current = m; return !m }), [])
   const next = useCallback(() => go(idx.current + 1), [go])
   const prev = useCallback(() => go(idx.current - 1), [go])
 
@@ -347,17 +353,16 @@ export default function Pager({
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || e.metaKey || e.ctrlKey) return
       if (['ArrowDown', 'j', 'PageDown'].includes(e.key)) { e.preventDefault(); next() }
       else if (['ArrowUp', 'k', 'PageUp'].includes(e.key)) { e.preventDefault(); prev() }
-      else if (e.key === 'm') setMuted((m) => !m)
+      else if (e.key === 'm') toggleMute()
       else if (e.key === ' ') { e.preventDefault(); setPaused((p) => !p); poke() }
       else if (e.key === 'r' && idx.current === 0) refresh()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [next, prev, refresh, poke])
+  }, [next, prev, refresh, poke, toggleMute])
 
   // ---------------------------------------------------------------- card callbacks (stable for memo)
   const togglePause = useCallback(() => setPaused((p) => !p), [])
-  const toggleMute = useCallback(() => setMuted((m) => !m), [])
   const autoMuted = useCallback(() => setMuted(true), [])
   const started = useCallback((id) => setReadyId(id), [])
   // A video that can't play (removed, not embeddable, dead file) is reported and skipped
@@ -369,14 +374,14 @@ export default function Pager({
   const clipEnded = useCallback((id) => {
     const { items: list, rewind: rw } = live.current
     if (list[idx.current]?.id !== id || chromeRef.current || pausedRef.current) return false
-    return go(idx.current + (rw ? -1 : 1))
+    return go(idx.current + (rw ? -1 : 1), { auto: true })
   }, [go])
   // A video that shows nothing for a long time on a weak link: move on (it stays in the
   // catalogue; it's probably the connection, not the video).
   const skipSlow = useCallback((id) => {
     const { items: list, rewind: rw } = live.current
     if (list[idx.current]?.id !== id || pausedRef.current) return
-    if (go(idx.current + (rw ? -1 : 1))) flashNotice('Skipped a slow video', 'down')
+    if (go(idx.current + (rw ? -1 : 1), { auto: true })) flashNotice('Skipped a slow video', 'down')
   }, [go, flashNotice])
   const failed = useCallback((item, code) => {
     trackEvent({ type: 'broken', item_id: item.id, code })
@@ -389,7 +394,7 @@ export default function Pager({
     return (
       <div className="feed-empty">
         {loading ? (
-          <><Logo size={56} /><p className="mono muted">Rewinding the tape…</p></>
+          <><LoadingLogo size={72} /><p className="mono muted">Rewinding the tape…</p></>
         ) : error ? (
           <><p>{error}</p><button type="button" className="btn" onClick={onRetry}>Try again</button></>
         ) : empty || (
@@ -441,7 +446,7 @@ export default function Pager({
           )}
           {h > 0 && loading && !done && index >= items.length - 1 && (
             <div className="slot end-card" style={{ top: items.length * h, height: h }}>
-              <Logo size={48} /><p className="mono muted">Loading more…</p>
+              <LoadingLogo size={60} /><p className="mono muted">Loading more…</p>
             </div>
           )}
         </div>
@@ -449,7 +454,7 @@ export default function Pager({
 
       {onRefresh && (
         <div ref={pullEl} className={`pull ${refreshing ? 'spinning' : ''}`} aria-hidden={!refreshing}>
-          <Logo size={34} animate={refreshing} />
+          {refreshing ? <LoadingLogo size={30} /> : <Logo size={34} animate={false} />}
           {refreshing && <span className="mono">Fresh feed…</span>}
         </div>
       )}

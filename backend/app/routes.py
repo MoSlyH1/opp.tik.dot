@@ -115,13 +115,23 @@ def meta():
     return _edge_cache(jsonify(
         google_client_id=current_app.config["GOOGLE_CLIENT_ID"],
         dev_login=current_app.config["DEV_LOGIN"],
-        media_base=current_app.config["MEDIA_BASE"] if current_app.config["MEDIA_BASE"].startswith("https://") else "",
+        dm_player=current_app.config["DM_PLAYER_ID"] if current_app.config["DM_PLAYER_ID"].isalnum() else "",
+        sponsor=_sponsor(),
         sources=[{"id": s, "label": SOURCE_LABELS[s], "enabled": enabled.get(s, False)}
                  for s in SOURCES if s in used or enabled.get(s) and s not in ("facebook", "reddit")],
         # v3 clients read `categories`
         categories=m["topics"],
         **m,
     ))
+
+
+def _sponsor():
+    """The "Sponsored" box on the loading card (env SPONSOR_*). Links and images: https only."""
+    c = current_app.config
+    https = lambda u: u if u.startswith("https://") else ""  # noqa: E731
+    s = {"title": c["SPONSOR_TITLE"][:60], "text": c["SPONSOR_TEXT"][:120],
+         "url": https(c["SPONSOR_URL"]), "image": https(c["SPONSOR_IMAGE"])}
+    return s if any(s.values()) else None
 
 
 def _db_ok():
@@ -145,8 +155,8 @@ def preview():
 # ---------- feed ----------
 
 def _fast(it) -> bool:
-    """Starts quickly on a weak link: YouTube (nearby servers) or a clip on our CDN."""
-    return it.kind == "image" or it.source == "youtube" or bool((it.media_info or {}).get("hls") or (it.media_info or {}).get("clip"))
+    """Starts quickly on a weak link: YouTube (nearby servers) or a small hosted clip."""
+    return it.kind == "image" or it.source == "youtube" or bool((it.media_info or {}).get("clip"))
 
 
 @bp.route("/feed", methods=["GET", "POST"])

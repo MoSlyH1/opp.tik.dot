@@ -9,7 +9,8 @@
 import { api } from '../api.js'
 import { loadYouTube } from '../embed.js'
 import { getClipLength } from './clip.js'
-import { setMediaBase, tier } from './quality.js'
+import { tier } from './quality.js'
+import { setDmPlayer } from '../embed.js'
 
 const FILTER_KEY = 'opp.filters.v4'
 const DIMS = ['era', 'topic', 'region', 'channel', 'source']
@@ -22,7 +23,7 @@ try { saved = JSON.parse(localStorage.getItem(FILTER_KEY)) } catch { /* storage 
 const filters = Object.fromEntries(DIMS.map((d) => [d, Array.isArray(saved?.[d]) ? saved[d] : []]))
 
 export const boot = {
-  meta: api.meta().then((m) => { setMediaBase(m?.media_base); return m }).catch(() => { setMediaBase(''); return { offline: true } }),
+  meta: api.meta().then((m) => { setDmPlayer(m?.dm_player); return m }).catch(() => ({ offline: true })),
   me: api.me().catch(() => ({ user: null })),
   // 401 when signed out: harmless, it's just not used.
   feed: { key: saved ? normFilters(filters) : null, seed, used: false,

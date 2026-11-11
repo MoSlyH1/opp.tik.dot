@@ -2,14 +2,13 @@
 //
 //  - App files (/assets/*, hashed by Vite)   -> cache-first, forever. Second visit opens instantly.
 //  - Thumbnails (/thumb/*)                   -> served from cache, refreshed in the background.
-//  - Video chunks from our CDN (.m3u8 / .ts) -> cache-first. Swiping back, looping or re-opening
-//                                               a video costs zero data and starts instantly.
 //  - The page itself                         -> network first, cached copy if offline.
+// Never stores videos on the phone (v12 deletes the old v8-v11 video cache to free that space).
 // Never touches /api, /media (archive MP4 byte ranges) or third-party embeds.
 
-const V = 'v1'
-const SHELL = `shell-${V}`, ASSETS = `assets-${V}`, THUMBS = `thumbs-${V}`, VIDEO = `video-${V}`
-const LIMIT = { [THUMBS]: 400, [VIDEO]: 300 }   // ~300 chunks ~ 30-60 MB at most
+const V = 'v2'
+const SHELL = `shell-${V}`, ASSETS = `assets-${V}`, THUMBS = `thumbs-${V}`
+const LIMIT = { [THUMBS]: 300 }
 
 self.addEventListener('install', (e) => {
   self.skipWaiting()
@@ -18,7 +17,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    const keep = new Set([SHELL, ASSETS, THUMBS, VIDEO])
+    const keep = new Set([SHELL, ASSETS, THUMBS])
     for (const k of await caches.keys()) if (!keep.has(k)) await caches.delete(k)
     await self.clients.claim()
   })())
@@ -74,5 +73,4 @@ self.addEventListener('fetch', (e) => {
   if (req.mode === 'navigate') { e.respondWith(networkFirstPage(req)); return }
   if (same && url.pathname.startsWith('/assets/')) { e.respondWith(cacheFirst(req, ASSETS)); return }
   if (same && url.pathname.startsWith('/thumb/')) { e.respondWith(staleWhileRevalidate(req, THUMBS, e)); return }
-  if (!same && /\.(m3u8|ts|m4s)$/.test(url.pathname)) { e.respondWith(cacheFirst(req, VIDEO)); return }
 })

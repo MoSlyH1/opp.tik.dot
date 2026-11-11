@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { api } from './api.js'
 import { boot } from './lib/boot.js'
 import { AuthContext, MetaContext } from './context.js'
-import Logo from './components/Logo.jsx'
+import LoadingLogo from './components/LoadingLogo.jsx'
 import Shell from './components/Shell.jsx'
 import Feed from './pages/Feed.jsx'
 import Login from './pages/Login.jsx'
@@ -30,7 +30,7 @@ export default function App({ meta }) {
   if (user === undefined) {
     return (
       <div className="splash">
-        <Logo size={72} />
+        <LoadingLogo size={88} />
       </div>
     )
   }

@@ -240,7 +240,7 @@ def rank(user_id: int, base_query, exclude=(), limit=8, seed="", now=None, follo
         dur = length_fit(it.duration, clip_len)
         s = pers + 0.7 * q + 0.15 * (it.score or 0) + dur + 0.05 * math.log1p(it.likes_count or 0)
         s -= 0.3 * min(it.broken or 0, 3)
-        fast_copy = bool((it.media_info or {}).get("hls") or (it.media_info or {}).get("clip"))
+        fast_copy = bool((it.media_info or {}).get("clip"))
         if fast_copy:
             s += 0.15   # v11: a small hosted copy starts instantly; lean the feed towards them
         if tier != "high":

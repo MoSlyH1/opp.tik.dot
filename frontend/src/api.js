@@ -1,5 +1,3 @@
-import { getMediaBase, mediaReady } from './lib/quality.js'
-
 export const BASE = (import.meta.env.VITE_API_BASE || '') + '/api'
 
 const EDGE = typeof location !== 'undefined' && location.protocol.startsWith('http') && !/localhost|127\./.test(location.hostname)
@@ -15,10 +13,10 @@ async function request(path, { method = 'GET', body, signal } = {}) {
   let data = {}
   try {
     let text = await res.text()
-    if (EDGE && path !== '/meta') await mediaReady
-    // v7: archive.org thumbnails are slow and uncached from the Middle East; load them
-    // through our own edge cache (vercel.json rewrite /thumb/<id>) when we're on a real host.
-    if (EDGE) text = text.replaceAll('https://archive.org/services/img/', `${getMediaBase()}/thumb/`)
+    // archive.org thumbnails are slow and uncached from the Middle East; load them through our
+    // own edge cache (vercel.json rewrite /thumb/<id>) when we're on a real host.
+    // v12: no more waiting for /api/meta first (that held the first feed page back up to 3 s).
+    if (EDGE) text = text.replaceAll('https://archive.org/services/img/', '/thumb/')
     data = JSON.parse(text)
   } catch { /* not JSON */ }
   if (!res.ok) {

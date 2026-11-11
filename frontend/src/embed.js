@@ -19,6 +19,39 @@ export function loadYouTube() {
   return ytPromise
 }
 
+/*
+ * v12 Dailymotion. The old embed address (www.dailymotion.com/embed/video/<id>) has been retired:
+ * since September 2025 it only redirects to the new player and ignores the old settings, which
+ * is why Dailymotion videos stopped loading. The new player is loaded through Dailymotion's
+ * official Player Library (geo.dailymotion.com), which also gives real play / pause / time /
+ * error events, so the feed knows when a Dailymotion video actually starts.
+ * DM_PLAYER_ID (optional, Vercel env) picks your own player from Dailymotion Studio.
+ */
+let dmPlayerId = ''
+let dmPromise = null
+let dmBroken = false   // blocked once (ad blocker, firewall): don't make every card wait for it again
+export function setDmPlayer(id) { dmPlayerId = typeof id === 'string' && /^[a-z0-9]+$/i.test(id) ? id : '' }
+export function loadDailymotion() {
+  if (window.dailymotion?.createPlayer) return Promise.resolve(window.dailymotion)
+  if (dmBroken) return Promise.reject(new Error('Dailymotion player blocked'))
+  if (!dmPromise) {
+    dmPromise = new Promise((resolve, reject) => {
+      const done = () => { if (window.dailymotion?.createPlayer) { clearTimeout(t); resolve(window.dailymotion) } }
+      // The library calls onScriptLoaded once it is ready (official way to wait for it).
+      window.dailymotion = { ...(window.dailymotion || {}), onScriptLoaded: done }
+      const s = document.createElement('script')
+      s.src = dmPlayerId ? `https://geo.dailymotion.com/libs/player/${dmPlayerId}.js` : 'https://geo.dailymotion.com/libs/player.js'
+      s.async = true
+      s.onload = () => setTimeout(done, 0)
+      const fail = () => { dmPromise = null; dmBroken = true; reject(new Error('Dailymotion player blocked')) }
+      s.onerror = fail
+      const t = setTimeout(fail, 8000)
+      document.head.appendChild(s)
+    })
+  }
+  return dmPromise
+}
+
 export function tiktokUrl(item, { autoplay = false } = {}) {
   const id = encodeURIComponent(item.external_id)
   return `https://www.tiktok.com/player/v1/${id}?autoplay=${autoplay ? 1 : 0}&loop=1&music_info=1&description=0` +
@@ -29,12 +62,11 @@ export function tiktokUrl(item, { autoplay = false } = {}) {
 // Sources played in a plain iframe. `interactive`: the embed can't autoplay and needs a tap inside it.
 export function frameFor(item, { muted = true } = {}) {
   const id = encodeURIComponent(item.external_id)
-  const m = muted ? 1 : 0
   switch (item.source) {
     case 'dailymotion':
-      return { src: `https://www.dailymotion.com/embed/video/${id}?autoplay=1&mute=${m}&controls=0` +
-        `&queue-enable=false&queue-autoplay-next=false&sharing-enable=false&ui-start-screen-info=false&ui-logo=false` +
-        (item.start ? `&start=${item.start}` : ''), remountOnMute: true }
+      // Fallback only (the Player Library is used normally): the new embed address, no redirect.
+      return { src: `https://geo.dailymotion.com/player${dmPlayerId ? `/${dmPlayerId}` : ''}.html?video=${id}` +
+        `&mute=${muted ? 'true' : 'false'}${item.start ? `&startTime=${item.start}` : ''}`, remountOnMute: true }
     case 'facebook':
       return { src: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}` +
         `&show_text=false&autoplay=true&mute=${muted ? 'true' : 'false'}&allowfullscreen=false`, remountOnMute: true }
@@ -55,6 +87,7 @@ export function playerKind(item) {
   if (item.kind === 'image') return 'image'
   if (item.source === 'youtube') return 'youtube'
   if (item.source === 'tiktok') return 'tiktok'
+  if (item.source === 'dailymotion') return 'dailymotion'
   if (item.media_url) return 'native'
   return 'frame'
 }

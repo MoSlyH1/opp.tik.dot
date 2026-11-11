@@ -11,61 +11,74 @@ on **Rewind** and the whole feed runs the opposite direction.
 
 ---
 
-## What's new in v11 — a small hosted clip for every Archive video, free on Cloudflare Pages
+## What's new in v12 — quality you choose, Dailymotion fixed, no Cloudflare, logo loading card
 
-Archive.org serves every file from one server in the US, so Archive videos are slow from Lebanon
-(YouTube and Dailymotion are not: they stream from nearby Google / Dailymotion servers).
-TikTok and Reels are fast because each video is a tiny file on a nearby server. v11 does that
-for your Archive videos, with no bucket and no API keys:
+**Quality modes** (⋯ menu on any video, or Profile):
 
-- `backend/app/clips.py` makes **one small MP4 per Archive video**: its best **30 seconds**, 240p,
-  about 200 kbps (**roughly 0.6 MB**), index at the front so it starts after the first few KB.
-  Four encodes run at once, so all 1,310 videos take well under an hour on GitHub's runner.
-  Music videos start around the first chorus; long films skip the logos.
-- A GitHub Action (`.github/workflows/clips.yml`) runs it on GitHub's free servers and saves the
-  files on a branch called `clips` of this same repo. **Cloudflare Pages** serves that branch:
-  unlimited bandwidth, no 10 GB cap (Pages allows 20,000 files, up to 25 MB each).
-- The app plays the hosted clip when the chosen length fits in it (**30 s** and **1 min**), and the
-  original for **2 min / Full** and for **Watch full** (continuing from the same spot).
-  If a hosted file ever fails, the original plays instead; nobody sees an error.
-- The feed prefers videos that have a hosted clip, and a viewer's first video is always a fast one.
+| Mode | Plays | Archive | YouTube | Dailymotion |
+|---|---|---|---|---|
+| **Data saver** | 144p | 144p hosted clip, else the smallest file | player shrunk to the 144p width | 144p |
+| **Auto** | 240p or higher | 240p hosted clip (fastest start), else 240p → 720p file | 240p width, grows to 360/480/720p after instant starts | 240p → 720p |
+| **HD** | 480p or higher | original file, 480p or more | 480p width, uncapped at the top | 480p → 720p |
 
-### Setup (about 10 minutes, once)
-1. GitHub repo -> Settings -> Secrets and variables -> Actions -> New repository secret:
-   `DATABASE_URL` = your Neon link.
-2. GitHub repo -> Actions -> **clips** -> Run workflow (limit 300). The first run creates the `clips` branch. Expect roughly 5 minutes per 300 clips.
-3. Cloudflare (free account) -> Workers & Pages -> Create -> **Pages** -> Connect to Git -> pick this repo ->
-   production branch **`clips`** -> framework "None", build command empty, output directory empty (or `/`) -> Deploy.
-   Copy the address (`https://<project>.pages.dev`).
-4. Vercel -> your project -> Settings -> Environment Variables -> `CLIPS_BASE` = that address -> redeploy.
-5. Check: open `https://<project>.pages.dev/c/<number>.mp4` for any clip the Action made (see the
-   `clips` branch on GitHub): it should play.
+Auto starts at 240p, moves up one step after four instant starts in a row and back down after
+slow starts or two stalls, and never goes below 240p. HD never goes below 480p.
+YouTube doesn't let any site *force* a quality: the app caps it by the size of the player, which
+YouTube respects, but YouTube itself may still pick lower on a very bad connection.
 
-After that it runs by itself every day (300 clips/run) and the app picks new clips up automatically.
-To do the first batch faster, run the Action a few times with limit 500.
-1,310 videos is about 0.8 GB; the cap is `MAX_CLIPS` (default 2400, about 1.5 GB at 30 s).
+**Dailymotion plays again.** Dailymotion retired the old embed address
+(`www.dailymotion.com/embed/video/...`) in September 2025: it now redirects to a new player and
+ignores the old settings, so those videos stopped loading. v12 uses Dailymotion's official Player
+Library (`geo.dailymotion.com`), pooled per card like YouTube (one player per slot, reused, the next
+one warmed up before you swipe), with real play / time / error events so the feed knows when it
+actually starts. If an ad blocker stops the library, the plain new-style embed plays instead.
+Optional: `DM_PLAYER_ID` (a Player you create in Dailymotion Studio -> Players) to choose your own
+player settings, such as no controls or no ads.
 
-Only Archive videos are re-hosted (they are public-domain / openly licensed). YouTube, Dailymotion and
-TikTok stay as embeds: re-hosting those isn't allowed.
+**Cloudflare removed.** `cdn-worker/`, `edge-worker/`, the R2 / HLS transcode job, hls.js
+(~90 KB less to download), `MEDIA_BASE` and `CDN_BASE` are gone. You can delete those variables from
+Vercel. Archive files still go through Vercel's own edge cache (`/media`), as before.
 
-The v8 R2 + Worker setup and the v10 `edge-worker/` are **not needed** any more (the daily R2 workflow
-was removed). The code is still in the repo, unused.
+**Hosted clips now on GitHub Pages** (free, no new account). Same `clips` branch and the same
+GitHub Action, which now makes two files per video: `c/<id>.mp4` (240p, ~0.6 MB, for Auto) and
+`c/<id>-144.mp4` (144p, ~0.35 MB, for Data saver). Clips made by v11 keep working; the Action only
+adds the missing 144p file. GitHub Pages sites must stay under 1 GB, so the Action stops at
+`CLIPS_MAX_MB` (950) and gives clips to the most-watched videos first (roughly 800-900 videos).
+GitHub Pages is free for **public** repos (a private repo needs GitHub Pro).
 
-## What's new in v10 — free edge cache for Archive videos (3-minute setup, no bucket)
+Setup, once (5 minutes):
+1. GitHub repo -> Settings -> Secrets and variables -> Actions: `DATABASE_URL` = your Neon link (if not there yet).
+2. Actions -> **clips** -> Run workflow (limit 300). The first run creates / updates the `clips` branch.
+3. Settings -> **Pages** -> Source: *Deploy from a branch* -> branch **`clips`**, folder **/ (root)** -> Save.
+   After a minute it shows the address: `https://<your-user>.github.io/<repo>/`.
+4. Vercel -> Settings -> Environment Variables -> `CLIPS_BASE` = that address **without** the last slash,
+   e.g. `https://moslyh1.github.io/opp.tik.dot` -> redeploy.
+5. Check: open `CLIPS_BASE/c/<a number>.mp4` (any file on the `clips` branch): it should play.
 
-Archive.org serves every file from one server in the US, which is the slow part from Lebanon.
-`edge-worker/worker.js` is a ~50-line Cloudflare Worker that sits in front of it and makes
-Cloudflare's CDN keep a copy of each file people stream. It stores nothing itself: no R2 bucket,
-no API keys, no GitHub secrets, no 10 GB limit. Free up to 100,000 requests/day.
+If you had connected Cloudflare Pages in v11, you can delete that Cloudflare project.
 
-1. Cloudflare (free account) -> Workers & Pages -> Create -> Hello World -> name `opp-edge` -> Deploy
-   -> Edit code -> paste `edge-worker/worker.js` -> Deploy. Copy its address (`https://opp-edge.<you>.workers.dev`).
-2. Vercel -> your project -> Settings -> Environment Variables -> `MEDIA_BASE` = that address -> redeploy.
-3. Check: open `<address>/media/<node>/<path>` of any clip twice (or look at the `cf-cache-status`
-   header in the browser's network tab): the second time it should say `HIT`.
+**Loading card with your logo.** If a video takes more than about a second to start, its card
+shows the thumbnail, your logo turning in the middle, the year and title, and a small
+**Sponsored** box at the bottom. It disappears the moment the video plays. Your logo is also the
+loading sign everywhere else (app start, mid-video buffering, loading more, search, refresh).
+It's inlined in the app (~2.5 KB), so it never waits for a download. Fill the Sponsored box from
+Vercel environment variables, no rebuild needed:
+`SPONSOR_TITLE`, `SPONSOR_TEXT`, `SPONSOR_URL` (https), `SPONSOR_IMAGE` (https, square).
+Empty = a house ad for opp.tik.dot with your logo. For an ad network later, render its unit in
+`frontend/src/components/Sponsor.jsx`.
 
-Without `MEDIA_BASE` everything works as in v9 (files go through Vercel). If the Worker is ever
-unreachable the player falls back to archive.org by itself.
+**Sound on from the second video.** The first swipe, arrow or key press turns sound on (unless you muted it yourself with the sound button). If the browser refuses sound without a tap, the video plays muted and shows "Tap for sound".
+
+**Faster start, less waste**
+- Every API call used to wait for `/api/meta` (up to 3 s on a cold start) before it could finish,
+  including the first page of the feed. Not any more.
+- The phone no longer stores video chunks (the old cache is deleted on the next visit).
+- Preconnects to Dailymotion and to the clips host, so the first byte comes sooner.
+
+Files: `frontend/src/lib/quality.js` (rewritten), `components/players/Player.jsx` (Dailymotion engine,
+quality picks, no HLS), `embed.js`, `lib/clip.js`, `components/FeedCard.jsx`, `LoadingLogo.jsx`,
+`Sponsor.jsx`, `brand.js`, `api.js`, `boot.js`, `Pager.jsx`, `public/sw.js`, `styles.css`;
+`backend/app/clips.py`, `models.py`, `routes.py`, `config.py`, `.github/workflows/clips.yml`.
 
 ## What's new in v9 — Snack mode: short clips that load fast (no setup)
 
@@ -89,32 +102,6 @@ No accounts, no Cloudflare, nothing to configure: push and it works.
 Files: `frontend/src/lib/clip.js` (new), `Player.jsx`, `FeedCard.jsx`, `Pager.jsx`, `FilterBar.jsx`,
 `Profile.jsx`, `Feed.jsx`, `boot.js`, `styles.css`; `backend/app/ranking.py`, `routes.py`.
 
-The v8 Cloudflare setup below is now **optional**. If you ever do it: at 30 s / 240p a clip is
-~1 MB, so the free 10 GB holds roughly 10,000 clips.
-
-## What's new in v8 — free CDN without a domain + device caching
-
-- **`cdn-worker/`**: a free Cloudflare Worker that serves the R2 bucket at
-  `https://opp-video.<you>.workers.dev`. No domain needed, free up to 100k requests/day, served
-  from Cloudflare's edge (incl. Beirut). This replaces step 2 of the setup below.
-- **Encodes v2**: 4 s chunks (half the requests), plus a 144p rung (~170 kbps) for weak mobile
-  data. Old v1 encodes keep working; the job re-encodes them over time.
-- **Service worker (`frontend/public/sw.js`)**: caches app files, thumbnails and video chunks on
-  the viewer's phone. Second visits open instantly; swiping back or looping costs zero data.
-- **Long cache headers** for `/assets/*` on Vercel; **hls.js light** build (~35 KB smaller).
-- Quality caps: Data saver tops at 240p, Auto (mid) at 360p, HD uncapped.
-
-### Free setup, start to finish (~20 minutes)
-1. Cloudflare (free account) -> R2 -> enable (free plan, 10 GB) -> create bucket `opp-video`.
-2. Workers & Pages -> Create -> Worker -> name `opp-video` -> Deploy -> Edit code -> paste
-   `cdn-worker/worker.js` -> Deploy. Settings -> Bindings -> Add -> R2 bucket:
-   variable `VIDEO`, bucket `opp-video`. Copy the Worker URL: that is `CDN_BASE`.
-3. R2 -> Manage API tokens -> Create (Object Read & Write, bucket `opp-video`):
-   gives `S3_KEY`, `S3_SECRET`, and `S3_ENDPOINT` = `https://<account-id>.r2.cloudflarestorage.com`.
-4. GitHub repo -> Settings -> Secrets and variables -> Actions -> add `DATABASE_URL` (Neon),
-   `S3_ENDPOINT`, `S3_BUCKET` (= `opp-video`), `S3_KEY`, `S3_SECRET`, `CDN_BASE`.
-5. GitHub -> Actions -> `transcode` -> Run workflow (limit 40). Then it runs daily.
-6. Check: open `CDN_BASE/v2/<an item id>/master.m3u8` in the browser; it should download a playlist.
 
 ## What's new in v6 — speed + tap-to-reveal
 
@@ -308,32 +295,3 @@ frontend/src/
 - Moderation queue for curated TikToks; user-submitted suggestions
 - PWA install + offline shell
 
-## Fast video (v7): HLS on a CDN
-
-**Why videos were slow:** archive.org serves each MP4 from one storage server in the US, with
-no CDN, often at a few hundred KB/s to Lebanon. Vercel is not the cause: video bytes never pass
-through Vercel. TikTok / Reels are fast because they stream 2-second chunks from an edge server
-near you and start on a low quality, climbing as the connection allows (adaptive bitrate).
-
-v7 does the same for archive clips (public domain / openly licensed, so re-hosting is allowed;
-YouTube and TikTok items stay as embeds):
-
-1. `python -m app.transcode` encodes each clip (up to 150 s from its start point) into
-   240p / 360p / 540p HLS with 2 s chunks and uploads it to an S3-compatible bucket.
-2. The API returns `hls` for those items; the player streams it with hls.js (Safari: natively),
-   buffers only the next video's first 2 chunks, and falls back to the archive MP4 on any error.
-3. The feed ranks CDN-streamed clips slightly higher, so the first screens start instantly.
-
-### One-time setup (Cloudflare R2, zero egress fees, 10 GB free)
-1. Cloudflare dashboard -> R2 -> create bucket `opp-video`.
-2. Bucket -> Settings -> Custom domain: connect e.g. `video.yourdomain.com` (needs the domain on
-   Cloudflare; the `r2.dev` URL is rate-limited and only for testing). That URL is `CDN_BASE`.
-3. Bucket -> Settings -> CORS policy:
-   `[{"AllowedOrigins":["https://YOUR-APP.vercel.app","*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":86400}]`
-   (replace with your Vercel domain; `*` is fine since the files are public).
-4. R2 -> Manage API tokens -> create an Object Read & Write token: gives `S3_KEY`, `S3_SECRET`,
-   and the endpoint `https://<account-id>.r2.cloudflarestorage.com` = `S3_ENDPOINT`.
-5. GitHub repo -> Settings -> Secrets -> Actions: add those + `DATABASE_URL` (Neon).
-6. Actions tab -> `transcode` -> Run workflow (limit 40). It then runs daily by itself.
-
-Rough size: ~25 MB per 150 s clip for all three rungs, so 400 clips ~ 10 GB (R2's free tier).

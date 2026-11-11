@@ -4,7 +4,7 @@ import { api } from '../api.js'
 import { DIMS, EMPTY_FILTERS, countFilters, useMeta } from '../context.js'
 import { ChipGroup, FilterSheet } from '../components/FilterBar.jsx'
 import Icon from '../components/Icon.jsx'
-import Logo from '../components/Logo.jsx'
+import LoadingLogo from '../components/LoadingLogo.jsx'
 import Tile from '../components/Tile.jsx'
 
 const SUGGESTIONS = ['Spacetoon', 'Captain Majid', 'Fairuz', 'World Cup 1998', 'Nokia 3310', 'Matrix trailer',
@@ -77,7 +77,7 @@ export default function Search() {
         </section>
       )}
 
-      {loading && <div className="center pad"><Logo size={44} /><p className="mono muted">Searching the archives…</p></div>}
+      {loading && <div className="center pad"><LoadingLogo size={56} /><p className="mono muted">Searching the archives…</p></div>}
       {error && <p className="error center">{error}</p>}
       {!loading && q && !error && items.length === 0 && (
         <p className="center muted pad">Nothing from back then matches “{q}”. Try a broader word or fewer filters.</p>

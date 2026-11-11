@@ -112,7 +112,8 @@ class Item(db.Model):
         return out
 
     def hosted_clip(self):
-        """v11: the small clip made by app/clips.py and served by Cloudflare Pages, if there is one."""
+        """The small clips made by app/clips.py and published by GitHub Pages, if there are any.
+        `url` is 240p (Auto), `url144` is 144p (Data saver) when it has been made."""
         c = (self.media_info or {}).get("clip")
         try:
             base = current_app.config.get("CLIPS_BASE", "")
@@ -120,8 +121,11 @@ class Item(db.Model):
             base = ""
         if not c or not base.startswith("https://"):
             return None
-        return {"url": f"{base}/c/{self.id}.mp4?v={c.get('v', 1)}", "s": c.get("s"), "from": c.get("from", 0),
-                "whole": bool(c.get("whole"))}
+        q = c.get("q") or [240]
+        v = c.get("v", 1)
+        return {"url": f"{base}/c/{self.id}.mp4?v={v}" if 240 in q else None,
+                "url144": f"{base}/c/{self.id}-144.mp4?v={v}" if 144 in q else None,
+                "s": c.get("s"), "from": c.get("from", 0), "whole": bool(c.get("whole"))}
 
     def to_dict(self, liked=False, saved=False):
         era = LEGACY_ERAS.get(self.era, self.era)
@@ -135,10 +139,7 @@ class Item(db.Model):
             "url": self.url,
             "media_url": self.media_url or None,
             "renditions": self.renditions(),
-            # v7: adaptive HLS on our CDN (archive items only); the player prefers it.
-            "hls": (self.media_info or {}).get("hls"),
             "clip": self.hosted_clip(),
-            "hls_start": (self.media_info or {}).get("hls_start", 0),
             "title": self.title,
             "author": self.author,
             "thumbnail": self.thumbnail,
