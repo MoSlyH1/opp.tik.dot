@@ -129,3 +129,18 @@ def reclassify(limit: int = 2000) -> int:
         it.tax_v = TAXONOMY_VERSION
     db.session.commit()
     return len(items)
+
+
+def clean_dailymotion(after_id: int = 0, limit: int = 200) -> dict:
+    """Hide Dailymotion videos viewers' country can't play (the player answers 403). Works through
+    the catalogue in id order; call again with the returned `next_after` until it is null."""
+    from .providers import dailymotion
+    batch = (Item.query.filter(Item.source == "dailymotion", Item.hidden.is_(False), Item.id > after_id)
+             .order_by(Item.id).limit(limit).all())
+    bad = dailymotion.unplayable([i.external_id for i in batch])
+    for i in batch:
+        if i.external_id in bad:
+            i.hidden = True
+    db.session.commit()
+    return {"checked": len(batch), "hidden": len(bad),
+            "next_after": batch[-1].id if len(batch) == limit else None}

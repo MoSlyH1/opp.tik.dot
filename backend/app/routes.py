@@ -425,6 +425,14 @@ def admin_reclassify():
     return jsonify(relabelled=reclassify(limit=5000))
 
 
+@bp.post("/admin/dm-clean")
+@admin_required
+def admin_dm_clean():
+    """Hide Dailymotion videos blocked in Lebanon / not embeddable. Repeat with ?after=<next_after>."""
+    from .store import clean_dailymotion
+    return jsonify(clean_dailymotion(after_id=request.args.get("after", 0, type=int)))
+
+
 @bp.post("/admin/archive-upgrade")
 @admin_required
 def admin_archive_upgrade():

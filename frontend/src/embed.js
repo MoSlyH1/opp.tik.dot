@@ -64,11 +64,12 @@ export function frameFor(item, { muted = true } = {}) {
   const id = encodeURIComponent(item.external_id)
   switch (item.source) {
     case 'dailymotion':
+      // v12.2: `autoplay=true` is Dailymotion's documented runtime parameter; without it the player waits for a tap.
       // v12.1: Dailymotion's own embed page, the address its retired embed link redirects to. The
       // feed reveals it when it loads (no events needed). `interactive`: if the browser blocks
       // autoplay, the viewer can tap Dailymotion's play button.
       return { src: `https://geo.dailymotion.com/player${dmPlayerId ? `/${dmPlayerId}` : ''}.html?video=${id}` +
-        `&mute=${muted ? 'true' : 'false'}${item.start ? `&startTime=${item.start}` : ''}`, remountOnMute: true, interactive: true }
+        `&autoplay=true&mute=${muted ? 'true' : 'false'}${item.start ? `&startTime=${item.start}` : ''}`, remountOnMute: true, interactive: true }
     case 'facebook':
       return { src: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}` +
         `&show_text=false&autoplay=true&mute=${muted ? 'true' : 'false'}&allowfullscreen=false`, remountOnMute: true }
