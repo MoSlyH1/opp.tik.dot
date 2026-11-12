@@ -27,26 +27,66 @@ export function loadYouTube() {
  * error events, so the feed knows when a Dailymotion video actually starts.
  * DM_PLAYER_ID (optional, Vercel env) picks your own player from Dailymotion Studio.
  */
-let dmPlayerId = ''
+// v13: Dailymotion only plays on other sites through a player ID (the no-ID address returns 403).
+// Backups, in order: your own DM_PLAYER_ID(s) (comma-separated), then two public player IDs from
+// Dailymotion's own docs. A player that fails 3 videos in a row without playing any is benched
+// on this browser for 2 days, then tried again. If every player is benched, all are tried again,
+// so the list is never empty. Nothing here can throw: storage errors are ignored.
+const DM_PUBLIC = ['xfh28', 'xc394']
+const DM_BENCH_MS = 2 * 24 * 3600 * 1000
+let dmOwn = []
+const dmFails = {}
+const dmStore = {
+  get() { try { return JSON.parse(localStorage.getItem('dm_bench') || '{}') || {} } catch { return {} } },
+  set(v) { try { localStorage.setItem('dm_bench', JSON.stringify(v)) } catch { /* private mode */ } },
+}
+export function setDmPlayer(id) {
+  dmOwn = String(id || '').split(',').map((x) => x.trim()).filter((x) => /^[a-z0-9]+$/i.test(x))
+}
+export function dmIds() {
+  const all = [...new Set([...dmOwn, ...DM_PUBLIC])]
+  const bench = dmStore.get()
+  const now = Date.now()
+  const ok = all.filter((x) => !(bench[x] && now - bench[x] < DM_BENCH_MS))
+  if (ok.length) return ok
+  dmStore.set({})
+  return all
+}
+// Report how a Dailymotion player did. Success clears its strikes; 3 strikes benches it.
+export function dmReport(pid, good) {
+  if (!pid) return
+  if (good) { dmFails[pid] = 0; return }
+  dmFails[pid] = (dmFails[pid] || 0) + 1
+  if (dmFails[pid] >= 3) {
+    dmFails[pid] = 0
+    const b = dmStore.get(); b[pid] = Date.now(); dmStore.set(b)
+  }
+}
+
+let dmLib = null        // the player ID the library was loaded with
 let dmPromise = null
-let dmBroken = false   // blocked once (ad blocker, firewall): don't make every card wait for it again
-export function setDmPlayer(id) { dmPlayerId = typeof id === 'string' && /^[a-z0-9]+$/i.test(id) ? id : '' }
+let dmBroken = false    // blocked once (ad blocker, firewall): plain embeds from then on
+export const dmLibId = () => dmLib
 export function loadDailymotion() {
-  if (window.dailymotion?.createPlayer) return Promise.resolve(window.dailymotion)
+  if (window.dailymotion?.createPlayer && dmLib) return Promise.resolve(window.dailymotion)
   if (dmBroken) return Promise.reject(new Error('Dailymotion player blocked'))
   if (!dmPromise) {
+    dmLib = dmIds()[0]
     dmPromise = new Promise((resolve, reject) => {
+      let t = null
       const done = () => { if (window.dailymotion?.createPlayer) { clearTimeout(t); resolve(window.dailymotion) } }
-      // The library calls onScriptLoaded once it is ready (official way to wait for it).
-      window.dailymotion = { ...(window.dailymotion || {}), onScriptLoaded: done }
-      const s = document.createElement('script')
-      s.src = dmPlayerId ? `https://geo.dailymotion.com/libs/player/${dmPlayerId}.js` : 'https://geo.dailymotion.com/libs/player.js'
-      s.async = true
-      s.onload = () => setTimeout(done, 0)
-      const fail = () => { dmPromise = null; dmBroken = true; reject(new Error('Dailymotion player blocked')) }
-      s.onerror = fail
-      const t = setTimeout(fail, 8000)
-      document.head.appendChild(s)
+      const fail = () => { clearTimeout(t); dmPromise = null; dmBroken = true; reject(new Error('Dailymotion player blocked')) }
+      try {
+        // The library calls onScriptLoaded once it is ready (official way to wait for it).
+        window.dailymotion = { ...(window.dailymotion || {}), onScriptLoaded: done }
+        const s = document.createElement('script')
+        s.src = `https://geo.dailymotion.com/libs/player/${dmLib}.js`
+        s.async = true
+        s.onload = () => setTimeout(done, 0)
+        s.onerror = fail
+        t = setTimeout(fail, 8000)
+        document.head.appendChild(s)
+      } catch { fail() }
     })
   }
   return dmPromise
@@ -60,16 +100,18 @@ export function tiktokUrl(item, { autoplay = false } = {}) {
 }
 
 // Sources played in a plain iframe. `interactive`: the embed can't autoplay and needs a tap inside it.
-export function frameFor(item, { muted = true } = {}) {
+export function frameFor(item, { muted = true, alt = 0 } = {}) {
   const id = encodeURIComponent(item.external_id)
   switch (item.source) {
-    case 'dailymotion':
-      // v12.2: `autoplay=true` is Dailymotion's documented runtime parameter; without it the player waits for a tap.
-      // v12.1: Dailymotion's own embed page, the address its retired embed link redirects to. The
-      // feed reveals it when it loads (no events needed). `interactive`: if the browser blocks
-      // autoplay, the viewer can tap Dailymotion's play button.
-      return { src: `https://geo.dailymotion.com/player${dmPlayerId ? `/${dmPlayerId}` : ''}.html?video=${id}` +
-        `&autoplay=true&mute=${muted ? 'true' : 'false'}${item.start ? `&startTime=${item.start}` : ''}`, remountOnMute: true, interactive: true }
+    case 'dailymotion': {
+      // Plain embed (library blocked). Always with a player ID: without one Dailymotion answers 403.
+      // `alt` picks the next backup player when the previous plain embed showed nothing.
+      const ids = dmIds()
+      const pid = ids[(alt || 0) % ids.length]
+      return { src: `https://geo.dailymotion.com/player/${pid}.html?video=${id}` +
+        `&autoplay=true&mute=${muted ? 'true' : 'false'}${item.start ? `&startTime=${Math.floor(item.start)}` : ''}`,
+      remountOnMute: true, interactive: true, pid, tries: ids.length }
+    }
     case 'facebook':
       return { src: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}` +
         `&show_text=false&autoplay=true&mute=${muted ? 'true' : 'false'}&allowfullscreen=false`, remountOnMute: true }
@@ -90,6 +132,7 @@ export function playerKind(item) {
   if (item.kind === 'image') return 'image'
   if (item.source === 'youtube') return 'youtube'
   if (item.source === 'tiktok') return 'tiktok'
+  if (item.source === 'dailymotion') return 'dailymotion'
   if (item.media_url) return 'native'
   return 'frame'
 }

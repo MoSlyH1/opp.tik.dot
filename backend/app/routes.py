@@ -240,6 +240,10 @@ def events():
             it.engagement = (it.engagement or 0) + v
         elif kind == "broken":
             code = str(e.get("code") or "")[:20]
+            # v13: a Dailymotion stall / player error is usually our borrowed player or the
+            # viewer's network, not the video. Don't let it hide the video for everyone.
+            if code == "crash" or (it.source == "dailymotion" and code.startswith("dm:")):
+                continue
             it.broken = (it.broken or 0) + 1
             if code in DEFINITIVE_ERRORS:
                 it.hidden = True

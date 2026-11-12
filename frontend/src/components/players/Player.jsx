@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { frameFor, loadDailymotion, loadYouTube, playerKind, tiktokUrl } from '../../embed.js'
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { dmIds, dmLibId, dmReport, frameFor, loadDailymotion, loadYouTube, playerKind, tiktokUrl } from '../../embed.js'
 import { PLAN, dmQuality, lowestRendition, pickRendition, preconnect, useQuality, viaEdge, ytCap } from '../../lib/quality.js'
 
 /*
@@ -142,8 +142,8 @@ function YouTube({ item, active, warm, ahead, near, muted, paused, cb, control, 
     p.playVideo()
     // Sound refused by the browser? Retry muted rather than show a play button.
     const t1 = setTimeout(() => {
-      if (state.current !== 1 && !p.isMuted?.()) { p.mute(); p.playVideo(); calls.current.onAutoMuted?.() }
-    }, 1800)
+      if (state.current !== 1 && state.current !== 3 && !p.isMuted?.()) { p.mute(); p.playVideo(); calls.current.onAutoMuted?.() }
+    }, 2500)
     const t2 = setTimeout(() => { if (state.current !== 1) p.playVideo() }, 3500)
     const t3 = setTimeout(() => { if (!ever.current && state.current !== 3) calls.current.onFail?.('yt:stall') }, 15000)
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
@@ -207,7 +207,7 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
   const player = useRef(null)
   const [ready, setReady] = useState(false)
   const vid = useRef(null)
-  const st = useRef({ playing: false, ever: false, ad: false, clipDone: false, q: false })
+  const st = useRef({ playing: false, ever: false, ad: false, clipDone: false, q: false, buf: false })
   const was = useRef(false)
   const want = item?.external_id || null
   const start = Math.floor(clip ? clip.from : item?.start || 0)
@@ -219,6 +219,14 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
   if (!boot && want && (active || (canBoot && warm))) setBoot(true)
 
   const safe = (fn) => { try { return fn() } catch { return undefined } }
+  // A video that won't play: strike against this player ID, skip the video, and if the player
+  // got benched, move this slot to the plain embed with the next backup ID.
+  const bad = (code) => {
+    const pid = dmLibId()
+    dmReport(pid, false)
+    calls.current.onFail?.(code)
+    if (pid && dmIds()[0] !== pid) calls.current.onLibFail?.()
+  }
 
   useEffect(() => {
     if (!boot) return undefined
@@ -253,7 +261,8 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
         on('VIDEO_PLAYING', (s) => {
           if (!mine(s)) return
           const S = st.current
-          S.playing = true; S.ever = true; S.ad = false
+          S.playing = true; S.ever = true; S.ad = false; S.buf = false
+          dmReport(dmLibId(), true)
           quality()
           const Lv = live.current
           if (!Lv.active || !Lv.want) { safe(() => p.pause()); return }   // warm-up: park it
@@ -274,7 +283,7 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
           if (Lv.active && Lv.want && !Lv.paused) safe(() => p.play())     // paused by the player, not by us
           else calls.current.onPlaying?.(false)
         })
-        on('VIDEO_BUFFERING', (s) => { if (mine(s) && live.current.active) calls.current.onBuffering?.(true) })
+        on('VIDEO_BUFFERING', (s) => { if (!mine(s)) return; st.current.buf = true; if (live.current.active) calls.current.onBuffering?.(true) })
         on('VIDEO_TIMECHANGE', (s) => {
           if (!mine(s)) return
           const Lv = live.current
@@ -296,7 +305,7 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
           calls.current.onLoop?.()
         })
         on('PLAYER_ERROR', (s) => {
-          if (live.current.want && mine(s)) calls.current.onFail?.(`dm:${s?.playerError?.code || 'error'}`)
+          if (live.current.want && mine(s)) bad(`dm:${s?.playerError?.code || 'error'}`)
         })
         setReady(true)
       })
@@ -317,7 +326,7 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
     if (!want) { safe(() => { p.pause(); p.setMute(true) }); return }
     if (want === vid.current) return
     vid.current = want
-    st.current = { playing: false, ever: false, ad: false, clipDone: false, q: false }
+    st.current = { playing: false, ever: false, ad: false, clipDone: false, q: false, buf: false }
     was.current = false
     safe(() => { p.setMute(true); p.loadContent({ video: want, startTime: start }) })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -334,10 +343,10 @@ function Dailymotion({ item, active, warm, muted, paused, cb, control, canBoot, 
     safe(() => p.play())
     // Sound refused by the browser? Retry muted rather than show a play button.
     const t1 = setTimeout(() => {
-      if (!st.current.playing && !st.current.ad && !live.current.muted) { safe(() => { p.setMute(true); p.play() }); calls.current.onAutoMuted?.() }
-    }, 1800)
+      if (!st.current.playing && !st.current.ad && !st.current.buf && !live.current.muted) { safe(() => { p.setMute(true); p.play() }); calls.current.onAutoMuted?.() }
+    }, 2500)
     const t2 = setTimeout(() => { if (!st.current.playing && !st.current.ad) safe(() => p.play()) }, 3500)
-    const t3 = setTimeout(() => { if (!st.current.ever && !st.current.ad) calls.current.onFail?.('dm:stall') }, 15000)
+    const t3 = setTimeout(() => { if (!st.current.ever && !st.current.ad) bad('dm:stall') }, 15000)
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, ready, paused, want])
@@ -578,7 +587,20 @@ function Still({ item, active, cb }) {
   return <img className={`still ${active ? 'kenburns' : ''}`} src={item.media_url || item.thumbnail} alt="" />
 }
 
+// v13: if any player crashes, only that video is skipped. The site keeps running.
+class Guard extends Component {
+  constructor(p) { super(p); this.state = { err: null } }
+  static getDerivedStateFromError() { return { err: true } }
+  componentDidCatch() { try { this.props.onFail?.('crash') } catch { /* ignore */ } }
+  componentDidUpdate(prev) { if (prev.id !== this.props.id && this.state.err) this.setState({ err: null }) }
+  render() { return this.state.err ? null : this.props.children }
+}
+
 export default function Player(props) {
+  return <Guard id={props.item?.id} onFail={props.cb?.onFail}><Engines {...props} /></Guard>
+}
+
+function Engines(props) {
   const { item } = props
   const q = useQuality()
   const [nativeFailed, setNativeFailed] = useState(null)

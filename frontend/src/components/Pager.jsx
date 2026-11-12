@@ -177,6 +177,16 @@ export default function Pager({
   // v12: sound is on from the second video. The first swipe / key / arrow is the viewer's own
   // gesture, which is what lets browsers play with sound. Unless they muted it themselves.
   const wantSound = useRef(true)
+  const touched = useRef(false)
+  useEffect(() => {
+    const first = () => {
+      touched.current = true
+      if (wantSound.current) setMuted(false)
+      ;['pointerup', 'touchend', 'keydown', 'click'].forEach((ev) => window.removeEventListener(ev, first, true))
+    }
+    ;['pointerup', 'touchend', 'keydown', 'click'].forEach((ev) => window.addEventListener(ev, first, true))
+    return () => ['pointerup', 'touchend', 'keydown', 'click'].forEach((ev) => window.removeEventListener(ev, first, true))
+  }, [])
   const go = useCallback((target, { fromDrag = false, auto = false } = {}) => {
     const { items: list, rewind: rw, done: dn, h: hh } = live.current
     const cur = idx.current
@@ -195,7 +205,9 @@ export default function Pager({
       setIndex(next)
       setPaused(false)
       setHint(false)
-      if (!auto && wantSound.current) setMuted(false)
+      // v13: sound stays on as you scroll, auto-advance included, once you've touched the page
+      // (browsers allow sound after the first gesture). A video that refused sound only muted itself.
+      if (wantSound.current && (!auto || touched.current)) setMuted(false)
       if (navigator.vibrate && fromDrag) { try { navigator.vibrate(4) } catch { /* not allowed */ } }
     }
     return next !== cur
